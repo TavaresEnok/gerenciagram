@@ -189,6 +189,13 @@ model User {
   failedLoginCount Int       @default(0)
   lockedUntil      DateTime?
 
+  /// Acesso ao painel interno do DONO do SaaS (SPEC seção 6).
+  ///
+  /// Fica fora do RBAC de tenant de propósito: nenhum papel de organização
+  /// pode conceder este acesso, nem por engano nem por escalação. Só é
+  /// atribuído diretamente no banco.
+  isPlatformAdmin Boolean @default(false)
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?

@@ -2,6 +2,7 @@ import {
   JOB_APPLY_RETENTION,
   JOB_COLLECT_ACCOUNT_METRICS,
   JOB_PROCESS_DATA_DELETION,
+  JOB_GENERATE_REPORT,
   JOB_PROCESS_MEDIA,
   JOB_PUBLISH_TARGET,
   JOB_REFRESH_TOKEN,
@@ -16,6 +17,7 @@ import { processCollectMetrics } from './processors/analytics.js';
 import { applyRetention, processDataDeletion } from './processors/maintenance.js';
 import { processMedia } from './processors/media.js';
 import { processPublishTarget } from './processors/publish.js';
+import { processGenerateReport } from './processors/reports.js';
 import { processTokenRefresh, scanExpiringTokens } from './processors/tokens.js';
 
 /**
@@ -140,6 +142,13 @@ async function main(): Promise<void> {
     QUEUE_NAMES.analyticsCollection,
     (job) => processCollectMetrics(container, job as never),
     3,
+  );
+
+  // --- Relatórios ----------------------------------------------------------
+  makeWorker(
+    QUEUE_NAMES.reports,
+    (job) => processGenerateReport(container, job as never),
+    2,
   );
 
   // --- Manutenção ----------------------------------------------------------
