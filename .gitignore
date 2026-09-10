@@ -1,0 +1,29 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+.turbo/
+.pnpm-store/
+
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+.DS_Store
+Thumbs.db
+
+# Volumes locais do docker compose (quando bind-mount)
+infra/docker/data/
+
+# Artefatos de mídia gerados em testes
+tmp/
+uploads/

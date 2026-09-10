@@ -1,0 +1,17 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+# Scripts de build de dependências nativas/binárias que autorizamos a rodar.
+# pnpm bloqueia por padrão (supply chain — SPEC seção 10); liberamos só o
+# que o projeto realmente precisa.
+
+allowBuilds:
+  esbuild: true
+  '@prisma/client': true
+  prisma: true
+  argon2: true
+  sharp: true
+  unrs-resolver: true
+  '@prisma/engines': true
+  msgpackr-extract: true
+

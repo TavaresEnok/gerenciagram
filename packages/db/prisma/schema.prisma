@@ -1,0 +1,1369 @@
+// ============================================================================
+//  Gerenciador de Redes Sociais — modelo de dados
+//
+//  Princípios que valem para o schema inteiro (SPEC seções 5, 8, 11):
+//
+//  1. `organizationId` indexado em TODA entidade com dado de tenant. O
+//     isolamento é garantido em nível de consulta, não só de aplicação.
+//  2. Soft-delete (`deletedAt`) em toda entidade com dado de usuário, para
+//     permitir exclusão sob LGPD sem quebrar histórico/relatórios emitidos.
+//  3. `Post` NÃO tem horário nem status de publicação. Quem publica é o
+//     `PostTarget` — um por conta de destino. Uma publicação para um grupo
+//     de 20 contas gera 20 destinos independentes.
+//  4. Todo horário é `DateTime` em UTC. O fuso de exibição vem da conta de
+//     destino (`SocialAccount.timezone`), nunca do navegador do usuário.
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+//  ENUMS
+// ============================================================================
+
+enum PlatformKey {
+  INSTAGRAM
+  FACEBOOK
+  TIKTOK
+  YOUTUBE
+  X
+  KWAI
+}
+
+/// Papéis do RBAC (SPEC seção 5). A ordem importa: papéis mais acima têm
+/// superconjunto das permissões dos de baixo, com exceções tratadas em código.
+enum RoleName {
+  OWNER
+  ADMIN
+  MANAGER
+  EDITOR
+  APPROVER
+  ANALYST
+  VIEWER
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum AccountStatus {
+  /// Conectada e com token válido
+  ACTIVE
+  /// Token expirado ou revogado — precisa reconectar
+  NEEDS_RECONNECT
+  /// Desconectada pelo usuário
+  DISCONNECTED
+  /// Suspensa pela plataforma (ex.: conta banida)
+  SUSPENDED
+}
+
+/// Status agregado do post. Derivado dos status dos destinos — nunca a fonte
+/// da verdade sobre publicação em si.
+enum PostStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+/// Status real de publicação, por conta de destino.
+enum PostTargetStatus {
+  /// Criado, ainda sem horário definido
+  PENDING
+  /// Com horário definido, aguardando o worker
+  SCHEDULED
+  /// Job enfileirado no BullMQ
+  QUEUED
+  /// Worker processando agora
+  PUBLISHING
+  /// Publicado com sucesso — tem remoteId
+  PUBLISHED
+  /// Esgotou as tentativas ou falhou de forma não-recuperável
+  FAILED
+  /// Cancelado pelo usuário
+  CANCELLED
+  /// Não publicado por decisão do sistema (cota, validação, feature flag)
+  SKIPPED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  AUDIO
+}
+
+enum MediaProcessingStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+}
+
+enum ScheduleMode {
+  /// Usuário escolheu data/hora explícita
+  SPECIFIC_TIME
+  /// Post entrou no próximo slot livre da grade semanal da conta
+  QUEUE_SLOT
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PRO
+  AGENCY
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+/// Estado do circuit breaker por plataforma (SPEC seção 12)
+enum CircuitState {
+  CLOSED
+  OPEN
+  HALF_OPEN
+}
+
+enum InboxItemType {
+  COMMENT
+  MENTION
+  DIRECT_MESSAGE
+}
+
+// ============================================================================
+//  IDENTIDADE E TENANT
+// ============================================================================
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  emailVerified DateTime?
+  /// argon2id. Nulo se o usuário só usa SSO.
+  passwordHash  String?
+  name          String
+  avatarUrl     String?
+  locale        String    @default("pt-BR")
+  /// Fuso de exibição preferido do usuário. NÃO é o fuso de publicação —
+  /// esse vem sempre da conta de destino.
+  timezone      String    @default("America/Sao_Paulo")
+
+  /// 2FA (SPEC seção 10). Segredo TOTP cifrado com AES-256-GCM.
+  twoFactorEnabled       Boolean   @default(false)
+  twoFactorSecret        String?
+  twoFactorRecoveryCodes String[]  @default([])
+  twoFactorConfirmedAt   DateTime?
+
+  lastLoginAt      DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  memberships      Membership[]
+  sessions         Session[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  approvals        Approval[]
+  approvalComments ApprovalComment[]
+  createdContents  Content[]         @relation("ContentCreatedBy")
+  createdPosts     Post[]            @relation("PostCreatedBy")
+  uploadedMedia    MediaAsset[]      @relation("MediaUploadedBy")
+
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model Organization {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String
+  slug     String  @unique
+  logoUrl  String?
+  timezone String  @default("America/Sao_Paulo")
+
+  /// Retenção de dados em dias (SPEC seção 11). Nulo = usa o padrão do plano.
+  mediaRetentionDays     Int?
+  analyticsRetentionDays Int?
+  auditLogRetentionDays  Int?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  memberships      Membership[]
+  clients          Client[]
+  socialAccounts   SocialAccount[]
+  accountGroups    AccountGroup[]
+  mediaAssets      MediaAsset[]
+  mediaFolders     MediaFolder[]
+  contents         Content[]
+  posts            Post[]
+  postTargets      PostTarget[]
+  campaigns        Campaign[]
+  approvals        Approval[]
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+  quotaUsage       PlatformQuotaUsage[]
+  analytics        AnalyticsSnapshot[]
+  inboxItems       Comment[]
+  subscription     Subscription?
+  featureFlags     FeatureFlagOverride[]
+  deletionRequests DataDeletionRequest[]
+  postingSchedules PostingSchedule[]
+  reports          Report[]
+
+  @@index([deletedAt])
+  @@map("organizations")
+}
+
+model Membership {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  userId         String           @db.Uuid
+  role           RoleName
+  status         MembershipStatus @default(ACTIVE)
+
+  /// Se preenchido, o membro só enxerga estes clientes. Vazio = todos.
+  scopedClientIds String[] @default([])
+
+  invitedAt  DateTime  @default(now())
+  acceptedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, deletedAt])
+  @@index([userId])
+  @@map("memberships")
+}
+
+model Session {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  /// SHA-256 do refresh token. O token em claro nunca é persistido.
+  refreshTokenHash String @unique
+  /// Rotação de refresh token: ao usar, gera novo e marca o antigo.
+  /// Reuso de token já rotacionado => sessão comprometida, revoga a família.
+  familyId  String    @db.Uuid
+  rotatedAt DateTime?
+  revokedAt DateTime?
+
+  userAgent String?
+  ipAddress String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Tokens de uso único para verificação de e-mail e reset de senha.
+model VerificationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// SHA-256 do token enviado por e-mail
+  tokenHash String   @unique
+  /// EMAIL_VERIFICATION | PASSWORD_RESET | ORG_INVITE
+  purpose   String
+  email     String  
+  payload   Json?
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([email, purpose])
+  @@index([expiresAt])
+  @@map("verification_tokens")
+}
+
+/// Cliente/Marca — contêiner de permissão e de contas (SPEC seção 5).
+model Client {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  name           String
+  slug           String
+  logoUrl        String?
+  /// Fuso padrão herdado pelas contas deste cliente (sobrescrevível por conta).
+  timezone       String  @default("America/Sao_Paulo")
+  notes          String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  socialAccounts SocialAccount[]
+  contents       Content[]
+  posts          Post[]
+  campaigns      Campaign[]
+  mediaAssets    MediaAsset[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, deletedAt])
+  @@map("clients")
+}
+
+// ============================================================================
+//  PLATAFORMAS E CONTAS
+// ============================================================================
+
+/// Metadados e capacidades de cada rede (SPEC seções 3 e 4).
+///
+/// Esta tabela é a fonte que alimenta as validações por destino no momento do
+/// agendamento (seção 6.1). Nada aqui é hardcoded em código de aplicação.
+model SocialPlatform {
+  key         PlatformKey @id
+  displayName String
+  /// false enquanto não houver API oficial de publicação disponível
+  /// (caso do Kwai). A UI mostra a rede como indisponível.
+  isAvailable Boolean     @default(false)
+  /// Motivo exibido ao usuário quando isAvailable = false
+  unavailableReason String?
+
+  /// Capacidades: publicar vídeo/imagem/carrossel, ler métricas, responder
+  /// comentário etc. Estrutura validada por Zod em @app/core.
+  capabilities Json
+
+  /// Requisitos de mídia: formatos, proporção, duração e tamanho máximos.
+  mediaRequirements Json
+
+  /// Cotas conhecidas. Distingue cota POR CONTA de cota POR APP/PROJETO —
+  /// a do YouTube é por projeto do Google Cloud, compartilhada por todos os
+  /// clientes do SaaS (SPEC seção 12).
+  quotaRules Json
+
+  /// Política da plataforma sobre publicar conteúdo igual em várias contas:
+  /// ALLOWED | RESTRICTED | FORBIDDEN, com link da política.
+  duplicateContentPolicy Json
+
+  /// Telas/campos que a plataforma exige no fluxo de publicação
+  /// (ex.: TikTok Direct Post exige escolha de privacidade e consentimento).
+  requiredUxFields Json
+
+  /// Escopos de OAuth solicitados. Menor privilégio (SPEC seção 10).
+  oauthScopes String[] @default([])
+
+  docsUrl String?
+
+  /// true quando as credenciais do app estão configuradas no ambiente.
+  /// Calculado na subida; persistido para o painel admin enxergar.
+  credentialsConfigured Boolean @default(false)
+
+  /// Circuit breaker (SPEC seção 12)
+  circuitState        CircuitState @default(CLOSED)
+  circuitFailureCount Int          @default(0)
+  circuitOpenedAt     DateTime?
+  circuitHalfOpenAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  socialAccounts SocialAccount[]
+  quotaUsage     PlatformQuotaUsage[]
+
+  @@map("social_platforms")
+}
+
+/// Uma conta conectada. N contas por rede por cliente — nunca "uma por rede".
+model SocialAccount {
+  id             String      @id @default(uuid()) @db.Uuid
+  organizationId String      @db.Uuid
+  clientId       String      @db.Uuid
+  platform       PlatformKey
+
+  /// ID da conta na plataforma (channel id, page id, open id...)
+  remoteId String
+  /// @handle ou nome público exibido pela plataforma
+  remoteUsername    String?
+  remoteDisplayName String?
+  remoteAvatarUrl   String?
+  remoteProfileUrl  String?
+
+  /// Apelido interno editável — "TikTok 3 – Curiosidades" (SPEC seção 6.1)
+  nickname String
+
+  /// Fuso da conta. Herdado do Client na conexão, sobrescrevível.
+  /// "Segunda às 10h" = 10h NESTE fuso.
+  timezone String @default("America/Sao_Paulo")
+
+  status           AccountStatus @default(ACTIVE)
+  statusReason     String?
+  /// Conta business/creator? Algumas operações exigem.
+  isBusinessAccount Boolean      @default(false)
+  /// Metadados específicos da plataforma (ex.: page access token scope,
+  /// instagram business account id vinculado à página)
+  metadata         Json?
+
+  connectedAt      DateTime  @default(now())
+  lastCheckedAt    DateTime?
+  lastPublishedAt  DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization     Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client           Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  socialPlatform   SocialPlatform       @relation(fields: [platform], references: [key])
+  oauthToken       OAuthToken?
+  groupMemberships AccountGroupMember[]
+  postTargets      PostTarget[]
+  postingSchedule  PostingSchedule?
+  analytics        AnalyticsSnapshot[]
+  inboxItems       Comment[]
+  contentVariants  ContentVariant[]
+  quotaUsage       PlatformQuotaUsage[]
+
+  /// Uma conta remota só pode ser conectada uma vez por organização.
+  @@unique([organizationId, platform, remoteId])
+  @@index([organizationId, deletedAt])
+  @@index([clientId, platform, deletedAt])
+  @@index([platform, status])
+  @@map("social_accounts")
+}
+
+/// Tokens OAuth. NUNCA saem do backend (SPEC seções 6 e 10).
+model OAuthToken {
+  id              String @id @default(uuid()) @db.Uuid
+  socialAccountId String @unique @db.Uuid
+  organizationId  String @db.Uuid
+
+  /// Cifrados com AES-256-GCM usando ENCRYPTION_KEY. Formato:
+  /// base64(iv).base64(authTag).base64(ciphertext)
+  accessTokenEnc  String
+  refreshTokenEnc String?
+
+  /// Versão da chave de criptografia, para permitir rotação de secrets
+  /// sem reconectar todas as contas (SPEC seção 10).
+  keyVersion Int @default(1)
+
+  scopes String[] @default([])
+
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  lastRefreshedAt       DateTime?
+  refreshFailureCount   Int       @default(0)
+
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([accessTokenExpiresAt])
+  @@map("oauth_tokens")
+}
+
+// ============================================================================
+//  GRUPOS DE CONTAS (SPEC seção 6.1)
+//
+//  Grupo é ATALHO DE SELEÇÃO, transversal à hierarquia — não um nível dela,
+//  e nunca concede permissão.
+// ============================================================================
+
+model AccountGroup {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  name           String
+  description    String?
+  color          String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      AccountGroupMember[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, deletedAt])
+  @@map("account_groups")
+}
+
+/// N:N — a mesma conta pode estar em "Curiosidades" e em "Todos os TikToks".
+model AccountGroupMember {
+  id              String @id @default(uuid()) @db.Uuid
+  accountGroupId  String @db.Uuid
+  socialAccountId String @db.Uuid
+  organizationId  String @db.Uuid
+
+  addedAt DateTime @default(now())
+
+  accountGroup  AccountGroup  @relation(fields: [accountGroupId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountGroupId, socialAccountId])
+  @@index([socialAccountId])
+  @@index([organizationId])
+  @@map("account_group_members")
+}
+
+/// Grade semanal de horários por conta (fila por slots, SPEC seção 6.1).
+/// O grupo serve de atalho para configurar várias contas de uma vez, mas a
+/// grade vive na CONTA — cada uma tem seu fuso.
+model PostingSchedule {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String @db.Uuid
+  socialAccountId String @unique @db.Uuid
+
+  /// Slots no fuso da conta. Formato validado em @app/core:
+  /// [{ weekday: 0-6, hour: 0-23, minute: 0-59 }]
+  /// weekday 0 = domingo.
+  slots Json @default("[]")
+
+  isEnabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("posting_schedules")
+}
+
+// ============================================================================
+//  BIBLIOTECA DE MÍDIA
+// ============================================================================
+
+model MediaFolder {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  parentId       String? @db.Uuid
+  name           String
+  /// Caminho materializado ("/campanhas/verao") para busca e breadcrumb
+  path           String
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       MediaFolder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     MediaFolder[] @relation("FolderTree")
+  assets       MediaAsset[]
+
+  @@unique([organizationId, path])
+  @@index([organizationId, parentId, deletedAt])
+  @@map("media_folders")
+}
+
+model MediaAsset {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  clientId       String? @db.Uuid
+  folderId       String? @db.Uuid
+  uploadedById   String? @db.Uuid
+
+  filename         String
+  originalFilename String
+  mimeType         String
+  type             MediaType
+  sizeBytes        BigInt
+
+  /// Chave no bucket S3. A URL nunca é persistida — é sempre presigned na hora.
+  storageKey    String  @unique
+  thumbnailKey  String?
+  /// SHA-256 do arquivo. Permite deduplicação e detecção de conteúdo igual
+  /// entre contas (validação da SPEC seção 6.1).
+  checksum      String
+
+  /// Extraídos pelo worker de FFmpeg
+  width       Int?
+  height      Int?
+  durationMs  Int?
+  frameRate   Float?
+  videoCodec  String?
+  audioCodec  String?
+  bitrate     Int?
+
+  processingStatus MediaProcessingStatus @default(PENDING)
+  processingError  String?
+
+  tags String[] @default([])
+
+  /// Versionamento: aponta para o asset original quando é uma nova versão.
+  parentAssetId String? @db.Uuid
+  version       Int     @default(1)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  folder       MediaFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  uploadedBy   User?        @relation("MediaUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  parentAsset MediaAsset?  @relation("AssetVersions", fields: [parentAssetId], references: [id], onDelete: SetNull)
+  versions    MediaAsset[] @relation("AssetVersions")
+
+  contentMedia ContentMedia[]
+
+  @@index([organizationId, deletedAt])
+  @@index([organizationId, type, deletedAt])
+  @@index([organizationId, checksum])
+  @@index([folderId])
+  @@index([processingStatus])
+  @@map("media_assets")
+}
+
+// ============================================================================
+//  CONTEÚDO E COMPOSITOR
+// ============================================================================
+
+/// Conteúdo mestre — texto base e mídia, sem destino nem horário.
+model Content {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  clientId       String? @db.Uuid
+  createdById    String? @db.Uuid
+  campaignId     String? @db.Uuid
+
+  title       String?
+  /// Legenda/corpo base. Cada variante pode sobrescrever.
+  body        String  @default("")
+  hashtags    String[] @default([])
+  /// Marcado por IA? Exige revisão humana antes de publicar (SPEC seção 6).
+  aiGenerated Boolean @default(false)
+  aiReviewedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?          @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  createdBy    User?            @relation("ContentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  campaign     Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  variants     ContentVariant[]
+  media        ContentMedia[]
+  posts        Post[]
+
+  @@index([organizationId, deletedAt])
+  @@index([clientId])
+  @@index([campaignId])
+  @@map("contents")
+}
+
+/// Ordem da mídia dentro do conteúdo (carrossel, capa de vídeo etc.)
+model ContentMedia {
+  id           String @id @default(uuid()) @db.Uuid
+  contentId    String @db.Uuid
+  mediaAssetId String @db.Uuid
+  position     Int    @default(0)
+  /// Papel da mídia: MAIN | THUMBNAIL | COVER
+  role         String @default("MAIN")
+
+  content    Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  mediaAsset MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, mediaAssetId, role])
+  @@index([mediaAssetId])
+  @@map("content_media")
+}
+
+/// Variação por plataforma e, opcionalmente, override por conta.
+///
+/// socialAccountId NULO  => variação vale para toda a plataforma
+/// socialAccountId setado => override só daquela conta
+/// (ex.: legenda diferente só no TikTok 3 — SPEC seção 6)
+model ContentVariant {
+  id              String      @id @default(uuid()) @db.Uuid
+  contentId       String      @db.Uuid
+  organizationId  String      @db.Uuid
+  platform        PlatformKey
+  socialAccountId String?     @db.Uuid
+
+  title    String?
+  body     String?
+  hashtags String[] @default([])
+
+  /// Campos obrigatórios específicos da rede, validados contra
+  /// SocialPlatform.requiredUxFields no agendamento.
+  /// Ex.: { privacyLevel: "PUBLIC_TO_EVERYONE", disableComment: false,
+  ///        brandContentToggle: false, consentAcceptedAt: "..." }
+  platformFields Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content       Content        @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  /// Uma variação por plataforma; uma por conta quando é override.
+  @@unique([contentId, platform, socialAccountId])
+  @@index([organizationId])
+  @@index([socialAccountId])
+  @@map("content_variants")
+}
+
+// ============================================================================
+//  PUBLICAÇÃO
+// ============================================================================
+
+/// A publicação. NÃO publica nada sozinha — quem publica são os PostTargets.
+model Post {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  clientId       String? @db.Uuid
+  contentId      String  @db.Uuid
+  campaignId     String? @db.Uuid
+  createdById    String? @db.Uuid
+
+  /// Status agregado, recalculado a partir dos destinos.
+  status PostStatus @default(DRAFT)
+
+  scheduleMode ScheduleMode @default(SPECIFIC_TIME)
+
+  /// Horário "pretendido" escolhido no compositor, em UTC. É só o valor
+  /// padrão copiado para os destinos — a verdade de cada destino é o
+  /// `scheduledAt` do próprio PostTarget.
+  intendedScheduledAt DateTime?
+
+  /// Snapshot dos grupos usados no agendamento (SPEC seção 6.1). Guardar os
+  /// IDs permite à UI detectar que o grupo mudou e oferecer a ação explícita
+  /// "aplicar aos agendamentos futuros" — mudança de grupo NUNCA altera
+  /// agendamento existente sozinha.
+  sourceGroupIds       String[]  @default([])
+  groupSnapshotTakenAt DateTime?
+
+  /// Chave de idempotência da requisição de criação (SPEC seção 2).
+  idempotencyKey String? @unique
+
+  /// Post duplicado a partir de outro (reaproveitamento de conteúdo).
+  duplicatedFromId String? @db.Uuid
+
+  publishedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  content      Content      @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("PostCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  duplicatedFrom Post?  @relation("PostDuplicates", fields: [duplicatedFromId], references: [id], onDelete: SetNull)
+  duplicates     Post[] @relation("PostDuplicates")
+
+  targets  PostTarget[]
+  approval Approval?
+
+  @@index([organizationId, status, deletedAt])
+  @@index([organizationId, intendedScheduledAt])
+  @@index([clientId])
+  @@index([campaignId])
+  @@index([contentId])
+  @@map("posts")
+}
+
+/// A UNIDADE REAL DE PUBLICAÇÃO — uma por conta de destino.
+///
+/// Substitui o antigo "ScheduledPost": horário, status, tentativas, ID remoto
+/// e erro vivem AQUI, não no Post. Falha em 3 destinos não afeta os outros 17,
+/// e "tentar novamente" reprocessa só os que falharam (SPEC seções 6.1 e 12).
+model PostTarget {
+  id              String @id @default(uuid()) @db.Uuid
+  organizationId  String @db.Uuid
+  postId          String @db.Uuid
+  socialAccountId String @db.Uuid
+  platform        PlatformKey
+
+  status PostTargetStatus @default(PENDING)
+
+  /// SEMPRE em UTC. Exibido no fuso da conta (socialAccount.timezone).
+  scheduledAt DateTime?
+  /// Fuso usado para calcular scheduledAt — guardado para auditoria e para a
+  /// UI explicar "10h no fuso da conta".
+  scheduledTimezone String?
+  /// Quando veio da fila por slots, qual slot foi consumido.
+  queueSlotWeekday Int?
+  queueSlotHour    Int?
+  queueSlotMinute  Int?
+
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  lastAttemptAt DateTime?
+  nextRetryAt   DateTime?
+
+  /// Resultado na plataforma
+  remoteId  String?
+  remoteUrl String?
+
+  errorCode    String?
+  errorMessage String?
+  /// true quando o erro é definitivo (token revogado, mídia inválida) e não
+  /// adianta tentar de novo.
+  errorPermanent Boolean @default(false)
+
+  /// Resultado da validação feita NO AGENDAMENTO (SPEC seção 6.1).
+  /// [{ code, severity: 'ERROR'|'WARNING', message }]
+  validationIssues Json @default("[]")
+  validatedAt      DateTime?
+
+  /// Idempotência por destino. Derivada de (postId, socialAccountId) e enviada
+  /// à plataforma quando ela suporta chave de idempotência. Reprocessar um job
+  /// nunca publica duas vezes na mesma conta.
+  idempotencyKey String @unique
+
+  /// Correlation ID que atravessa API -> fila -> worker -> chamada externa
+  /// (SPEC seção 13).
+  correlationId String?
+
+  /// ID do job no BullMQ, para rastrear e cancelar.
+  jobId String?
+
+  publishedAt DateTime?
+  cancelledAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  post          Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  attemptLogs PublishAttempt[]
+  analytics   AnalyticsSnapshot[]
+
+  /// A garantia estrutural de "nunca duas publicações do mesmo post na mesma
+  /// conta". Vale mesmo com corrida entre dois workers.
+  @@unique([postId, socialAccountId])
+  @@index([organizationId, status])
+  @@index([status, scheduledAt])
+  @@index([socialAccountId, status])
+  @@index([platform, status])
+  @@index([nextRetryAt])
+  @@map("post_targets")
+}
+
+/// Histórico de cada tentativa de publicação. Nunca sobrescrito — é o que
+/// permite auditar por que um destino falhou 4 vezes antes de dar certo.
+model PublishAttempt {
+  id             String @id @default(uuid()) @db.Uuid
+  postTargetId   String @db.Uuid
+  organizationId String @db.Uuid
+
+  attemptNumber Int
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  durationMs    Int?
+
+  success      Boolean @default(false)
+  errorCode    String?
+  errorMessage String?
+  /// Status HTTP e corpo resumido da resposta da plataforma (sem token!)
+  httpStatus   Int?
+  responseSnippet String?
+
+  correlationId String?
+
+  postTarget PostTarget @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+
+  @@index([postTargetId, attemptNumber])
+  @@index([organizationId, startedAt])
+  @@map("publish_attempts")
+}
+
+/// Jobs que esgotaram o retry. Visíveis no painel admin — nunca somem
+/// silenciosamente (SPEC seção 12).
+model DeadLetterJob {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String? @db.Uuid
+
+  queueName String
+  jobName   String
+  jobId     String?
+  payload   Json
+
+  attemptsMade Int
+  failedReason String?
+  stackTrace   String?
+
+  correlationId String?
+
+  resolvedAt DateTime?
+  resolvedBy String?  @db.Uuid
+  resolution String?
+
+  createdAt DateTime @default(now())
+
+  @@index([queueName, resolvedAt])
+  @@index([organizationId, createdAt])
+  @@map("dead_letter_jobs")
+}
+
+/// Controle de cota por conta E por app/projeto (SPEC seções 3 e 12).
+///
+/// socialAccountId NULO => é cota do APP/PROJETO, compartilhada por toda a
+/// plataforma (caso do YouTube, cujo limite é do projeto do Google Cloud).
+model PlatformQuotaUsage {
+  id              String      @id @default(uuid()) @db.Uuid
+  organizationId  String?     @db.Uuid
+  socialAccountId String?     @db.Uuid
+  platform        PlatformKey
+
+  /// Dia de referência em UTC (00:00). Algumas plataformas resetam a cota em
+  /// horário próprio — o adapter informa qual janela usar.
+  windowDate  DateTime @db.Date
+  windowStart DateTime
+  windowEnd   DateTime
+
+  /// Contadores. `units` é para cotas ponderadas (YouTube); `count` para
+  /// cotas simples de "N posts por dia".
+  count Int @default(0)
+  units Int @default(0)
+
+  /// Limite vigente quando o registro foi criado (para auditoria histórica).
+  limitCount Int?
+  limitUnits Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  platformRef   SocialPlatform @relation(fields: [platform], references: [key])
+
+  /// Uma linha por (conta, dia) e uma por (plataforma, dia) para a cota de app.
+  @@unique([platform, socialAccountId, windowDate])
+  @@index([organizationId, windowDate])
+  @@index([platform, windowDate])
+  @@map("platform_quota_usage")
+}
+
+// ============================================================================
+//  CAMPANHAS, APROVAÇÃO, ANALYTICS
+// ============================================================================
+
+model Campaign {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  clientId       String? @db.Uuid
+
+  name        String
+  description String?
+  color       String?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  goal        String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  posts        Post[]
+  contents     Content[]
+
+  @@index([organizationId, deletedAt])
+  @@index([clientId])
+  @@map("campaigns")
+}
+
+model Approval {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  postId         String         @unique @db.Uuid
+  status         ApprovalStatus @default(PENDING)
+
+  requestedById String?   @db.Uuid
+  decidedById   String?   @db.Uuid
+  decidedAt     DateTime?
+  decisionNote  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  post         Post              @relation(fields: [postId], references: [id], onDelete: Cascade)
+  decidedBy    User?             @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+  comments     ApprovalComment[]
+
+  @@index([organizationId, status])
+  @@map("approvals")
+}
+
+model ApprovalComment {
+  id             String  @id @default(uuid()) @db.Uuid
+  approvalId     String  @db.Uuid
+  organizationId String  @db.Uuid
+  authorId       String? @db.Uuid
+
+  body String
+  /// Comentário interno nunca vai para a rede social.
+  isInternal Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  approval Approval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  author   User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([approvalId, createdAt])
+  @@index([organizationId])
+  @@map("approval_comments")
+}
+
+/// Fotografia de métricas num instante. Séries temporais são construídas a
+/// partir destes snapshots.
+model AnalyticsSnapshot {
+  id              String      @id @default(uuid()) @db.Uuid
+  organizationId  String      @db.Uuid
+  socialAccountId String      @db.Uuid
+  platform        PlatformKey
+  /// Nulo => métrica da CONTA (seguidores, alcance do perfil).
+  /// Preenchido => métrica de um post publicado.
+  postTargetId    String?     @db.Uuid
+
+  /// Dia de referência da métrica, em UTC.
+  capturedFor DateTime @db.Date
+  capturedAt  DateTime @default(now())
+
+  followers  Int?
+  impressions Int?
+  reach      Int?
+  likes      Int?
+  comments   Int?
+  shares     Int?
+  saves      Int?
+  views      Int?
+  watchTimeSeconds Int?
+  clicks     Int?
+  engagementRate Float?
+
+  /// Métricas específicas da rede que não cabem nas colunas acima.
+  raw Json?
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  postTarget    PostTarget?   @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, postTargetId, capturedFor])
+  @@index([organizationId, capturedFor])
+  @@index([socialAccountId, capturedFor])
+  @@index([postTargetId])
+  @@map("analytics_snapshots")
+}
+
+/// Inbox: comentários, menções e mensagens vindos das redes (quando a API
+/// permitir). Nome `Comment` conforme SPEC seção 8.
+model Comment {
+  id              String        @id @default(uuid()) @db.Uuid
+  organizationId  String        @db.Uuid
+  socialAccountId String        @db.Uuid
+  platform        PlatformKey
+  type            InboxItemType @default(COMMENT)
+
+  remoteId       String
+  remoteParentId String?
+  remotePostId   String?
+
+  authorRemoteId   String?
+  authorUsername   String?
+  authorAvatarUrl  String?
+
+  body       String
+  postedAt   DateTime
+  isRead     Boolean   @default(false)
+  isReplied  Boolean   @default(false)
+  repliedAt  DateTime?
+  replyBody  String?
+
+  raw Json?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, remoteId])
+  @@index([organizationId, isRead, deletedAt])
+  @@index([socialAccountId, postedAt])
+  @@map("comments")
+}
+
+/// Relatórios gerados (PDF/CSV). O arquivo vai para o storage; aqui fica o
+/// registro e a chave.
+model Report {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  requestedById  String? @db.Uuid
+
+  /// CLIENT | CAMPAIGN | ACCOUNT_GROUP
+  scope     String
+  scopeId   String?
+  format    String
+  periodStart DateTime
+  periodEnd   DateTime
+
+  /// PENDING | PROCESSING | READY | FAILED
+  status      String  @default("PENDING")
+  storageKey  String?
+  errorMessage String?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  /// Expurgo automático (SPEC seção 11)
+  expiresAt   DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([expiresAt])
+  @@map("reports")
+}
+
+// ============================================================================
+//  NOTIFICAÇÕES, AUDITORIA, LGPD
+// ============================================================================
+
+model Notification {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @db.Uuid
+  userId         String  @db.Uuid
+
+  /// POST_PUBLISHED | POST_FAILED | TOKEN_EXPIRED | APPROVAL_PENDING |
+  /// QUOTA_EXCEEDED | ACCOUNT_DISCONNECTED ...
+  type    String
+  title   String
+  body    String
+  /// Link relativo na UI (ex.: "/fila?target=...")
+  actionUrl String?
+  metadata  Json?
+
+  channel NotificationChannel @default(IN_APP)
+  readAt  DateTime?
+  sentAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([organizationId, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String? @db.Uuid
+  actorUserId    String? @db.Uuid
+
+  /// Ex.: "post.schedule", "account.disconnect", "member.role_change"
+  action     String
+  entityType String
+  entityId   String?
+
+  /// Diff resumido. NUNCA guardar token, senha ou segredo aqui.
+  changes Json?
+
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+
+  createdAt DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}
+
+/// Direito de exclusão da LGPD (SPEC seção 11). O processo é assíncrono
+/// porque precisa revogar tokens junto às plataformas antes de apagar.
+model DataDeletionRequest {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  requestedById  String @db.Uuid
+
+  /// PENDING | CONFIRMED | PROCESSING | COMPLETED | CANCELLED
+  status String @default("PENDING")
+  reason String?
+
+  /// Janela de arrependimento antes do expurgo definitivo.
+  scheduledFor DateTime
+  confirmedAt  DateTime?
+  processedAt  DateTime?
+
+  /// O que foi efetivamente feito, para prova de conformidade.
+  executionReport Json?
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([status, scheduledFor])
+  @@map("data_deletion_requests")
+}
+
+// ============================================================================
+//  BILLING E FEATURE FLAGS
+// ============================================================================
+
+/// Limites de plano vivem no BANCO, nunca hardcoded (SPEC seções 6 e 19).
+model Plan {
+  id       String   @id @default(uuid()) @db.Uuid
+  tier     PlanTier @unique
+  name     String
+  priceCents Int    @default(0)
+  currency String   @default("BRL")
+  isActive Boolean  @default(true)
+
+  /// { maxSocialAccounts, maxUsers, maxClients, maxScheduledPosts,
+  ///   maxStorageBytes, maxAccountGroups, aiCreditsPerMonth,
+  ///   requiresTwoFactorForAdmins, features: [...] }
+  limits Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @unique @db.Uuid
+  planId         String @db.Uuid
+
+  status SubscriptionStatus @default(TRIALING)
+
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime?
+  trialEndsAt        DateTime?
+  cancelledAt        DateTime?
+
+  /// Overrides pontuais negociados com o cliente, sem mudar o plano.
+  limitOverrides Json?
+
+  externalCustomerId     String?
+  externalSubscriptionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@map("subscriptions")
+}
+
+/// Ativar/desativar integração ou funcionalidade por organização sem deploy
+/// (SPEC seção 14).
+model FeatureFlag {
+  key         String  @id
+  description String
+  /// Valor padrão para todas as organizações
+  enabledByDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  overrides FeatureFlagOverride[]
+
+  @@map("feature_flags")
+}
+
+model FeatureFlagOverride {
+  id             String  @id @default(uuid()) @db.Uuid
+  flagKey        String
+  organizationId String  @db.Uuid
+  enabled        Boolean
+  note           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flag         FeatureFlag  @relation(fields: [flagKey], references: [key], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([flagKey, organizationId])
+  @@index([organizationId])
+  @@map("feature_flag_overrides")
+}
+
+/// Eventos de webhook recebidos das plataformas. Processamento assíncrono e
+/// idempotente por (plataforma, remoteEventId) — SPEC seção 16.
+model WebhookEvent {
+  id       String      @id @default(uuid()) @db.Uuid
+  platform PlatformKey
+
+  remoteEventId String?
+  eventType     String?
+  payload       Json
+  headers       Json?
+
+  signatureValid Boolean @default(false)
+
+  processedAt  DateTime?
+  processError String?
+  attempts     Int       @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([platform, remoteEventId])
+  @@index([platform, processedAt])
+  @@index([createdAt])
+  @@map("webhook_events")
+}
