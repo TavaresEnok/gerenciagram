@@ -27,4 +27,6 @@ export * from './validation/target-validator.js';
 export * from './resilience/retry.js';
 export * from './resilience/circuit-breaker.js';
 
+export * from './content/variants.js';
+
 export * from './jobs/contracts.js';

@@ -5,7 +5,7 @@ import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
 import type { Container } from '../../container.js';
 import { recordAudit } from '../../lib/audit.js';
-import { decrypt, encrypt, generateToken, hashToken, safeCompare } from '../../lib/crypto.js';
+import { decrypt, encrypt, generateToken, hashToken, safeCompare } from '@app/platform';
 import { signAccessToken, signMfaChallengeToken, verifyMfaChallengeToken } from '../../lib/jwt.js';
 import {
   emailVerificationMessage,

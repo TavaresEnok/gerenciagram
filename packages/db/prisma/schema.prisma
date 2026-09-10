@@ -952,6 +952,15 @@ model PlatformQuotaUsage {
   socialAccountId String?     @db.Uuid
   platform        PlatformKey
 
+  /// Chave de escopo: o id da conta, ou a constante 'APP' para a cota do
+  /// projeto/aplicativo.
+  ///
+  /// Coluna NÃO-nula de propósito. No Postgres dois NULL não colidem numa
+  /// restrição UNIQUE, então indexar por `socialAccountId` nulo permitiria
+  /// várias linhas de cota de app para o mesmo dia — e o limite compartilhado
+  /// nunca seria atingido, que é justamente o controle da SPEC seção 12.
+  scopeKey String
+
   /// Dia de referência em UTC (00:00). Algumas plataformas resetam a cota em
   /// horário próprio — o adapter informa qual janela usar.
   windowDate  DateTime @db.Date
@@ -975,7 +984,7 @@ model PlatformQuotaUsage {
   platformRef   SocialPlatform @relation(fields: [platform], references: [key])
 
   /// Uma linha por (conta, dia) e uma por (plataforma, dia) para a cota de app.
-  @@unique([platform, socialAccountId, windowDate])
+  @@unique([platform, scopeKey, windowDate])
   @@index([organizationId, windowDate])
   @@index([platform, windowDate])
   @@map("platform_quota_usage")
@@ -1067,6 +1076,14 @@ model AnalyticsSnapshot {
   /// Preenchido => métrica de um post publicado.
   postTargetId    String?     @db.Uuid
 
+  /// Chave de escopo do snapshot: o id do destino, ou a constante ACCOUNT.
+  ///
+  /// Coluna NÃO-nula pelo mesmo motivo de PlatformQuotaUsage.scopeKey: no
+  /// Postgres dois NULL não colidem numa UNIQUE, então indexar por
+  /// postTargetId nulo criaria um snapshot de conta duplicado a cada coleta
+  /// e dobraria os números em qualquer gráfico.
+  scopeKey String
+
   /// Dia de referência da métrica, em UTC.
   capturedFor DateTime @db.Date
   capturedAt  DateTime @default(now())
@@ -1090,7 +1107,7 @@ model AnalyticsSnapshot {
   socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
   postTarget    PostTarget?   @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
 
-  @@unique([socialAccountId, postTargetId, capturedFor])
+  @@unique([socialAccountId, scopeKey, capturedFor])
   @@index([organizationId, capturedFor])
   @@index([socialAccountId, capturedFor])
   @@index([postTargetId])

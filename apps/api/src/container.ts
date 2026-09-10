@@ -1,17 +1,17 @@
-import {
-  QUEUE_NAMES,
-  hasCredentials,
-  listPlatformDefinitions,
-  type AdapterRegistry,
-  type PlatformKey,
-  type SocialMediaAdapter,
-} from '@app/core';
+import { QUEUE_NAMES, type AdapterRegistry, type PlatformKey } from '@app/core';
 import { getPrismaClient, type PrismaClient } from '@app/db';
+import {
+  buildKeyring,
+  createCircuitGuard,
+  createCircuitStore,
+  createPlatformServices,
+  type CircuitGuard,
+  type EncryptionKeyring,
+  type PlatformServices,
+} from '@app/platform';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
-import { createYouTubeAdapter } from './adapters/youtube/index.js';
 import type { Env } from './config/env.js';
-import { buildKeyring, type EncryptionKeyring } from './lib/crypto.js';
 import { createLogger, type Logger } from './lib/logger.js';
 import { createMailer, type Mailer } from './lib/mailer.js';
 import { S3StorageProvider, type StorageProvider } from './lib/storage.js';
@@ -33,6 +33,9 @@ export interface Container {
   mailer: Mailer;
   keyring: EncryptionKeyring;
   queues: Queues;
+  platforms: PlatformServices;
+  circuit: CircuitGuard;
+  /** Atalho para `platforms.adapters`. */
   adapters: AdapterRegistry;
   /** Plataformas com credenciais de app preenchidas NESTE ambiente. */
   configuredPlatforms: Set<PlatformKey>;
@@ -84,9 +87,9 @@ export function createContainer(env: Env): Container {
   });
 
   const keyring = buildKeyring(env.ENCRYPTION_KEY);
-
   const queues = createQueues(env, redis);
-  const { adapters, configuredPlatforms } = createAdapterRegistry(env);
+  const platforms = createPlatformServices(env);
+  const circuit = createCircuitGuard(createCircuitStore(prisma));
 
   return {
     env,
@@ -97,8 +100,10 @@ export function createContainer(env: Env): Container {
     mailer,
     keyring,
     queues,
-    adapters,
-    configuredPlatforms,
+    platforms,
+    circuit,
+    adapters: platforms.adapters,
+    configuredPlatforms: platforms.configuredPlatforms,
   };
 }
 
@@ -125,46 +130,6 @@ function createQueues(env: Env, connection: Redis): Queues {
     reports: make(QUEUE_NAMES.reports),
     maintenance: make(QUEUE_NAMES.maintenance),
   };
-}
-
-/**
- * Registro de adapters.
- *
- * Só entra no registro a plataforma que TEM implementação. Uma rede
- * declarada mas não implementada não ganha um adapter vazio que finge
- * publicar — quem pedir recebe erro explícito (SPEC seção 19).
- */
-export function createAdapterRegistry(env: Env): {
-  adapters: AdapterRegistry;
-  configuredPlatforms: Set<PlatformKey>;
-} {
-  const implemented = new Map<PlatformKey, SocialMediaAdapter>();
-
-  implemented.set('YOUTUBE', createYouTubeAdapter());
-
-  const configuredPlatforms = new Set<PlatformKey>();
-  for (const def of listPlatformDefinitions()) {
-    if (def.isAvailable && hasCredentials(def, env as unknown as NodeJS.ProcessEnv)) {
-      configuredPlatforms.add(def.key);
-    }
-  }
-
-  const adapters: AdapterRegistry = {
-    get(platform) {
-      const adapter = implemented.get(platform);
-      if (!adapter) {
-        throw new Error(
-          `Não há adapter implementado para ${platform}. ` +
-            `Esta rede aparece como indisponível na interface.`,
-        );
-      }
-      return adapter;
-    },
-    has: (platform) => implemented.has(platform),
-    list: () => [...implemented.values()],
-  };
-
-  return { adapters, configuredPlatforms };
 }
 
 export async function closeContainer(container: Container): Promise<void> {

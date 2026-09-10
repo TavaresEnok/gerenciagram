@@ -1,0 +1,15 @@
+# Normaliza fim de linha: o repositório guarda LF, o checkout no Windows fica
+# a critério do core.autocrlf de cada máquina. Sem isto, o Git avisa a cada
+# `add` e um diff entre Windows e Linux vira o arquivo inteiro.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.mp4 binary
+pnpm-lock.yaml linguist-generated=true -diff
