@@ -202,6 +202,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.716.0
         version: 3.1129.0
+      '@aws-sdk/s3-request-presigner':
+        specifier: ^3.716.0
+        version: 3.1129.0
       bullmq:
         specifier: ^5.34.6
         version: 5.81.4(supports-color@7.2.0)

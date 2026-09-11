@@ -7,6 +7,7 @@ import {
   type SocialMediaAdapter,
 } from '@app/core';
 import { PlatformNotConfiguredError } from '@app/core';
+import { createFacebookAdapter, createInstagramAdapter } from './adapters/meta/index.js';
 import { createYouTubeAdapter } from './adapters/youtube/index.js';
 
 /**
@@ -19,6 +20,9 @@ import { createYouTubeAdapter } from './adapters/youtube/index.js';
 
 export interface PlatformEnv {
   OAUTH_PUBLIC_URL: string;
+  META_API_VERSION?: string | undefined;
+  /** Token do desafio de subscrição de webhook, cadastrado no console. */
+  META_WEBHOOK_VERIFY_TOKEN?: string | undefined;
   YOUTUBE_CLIENT_ID?: string | undefined;
   YOUTUBE_CLIENT_SECRET?: string | undefined;
   META_APP_ID?: string | undefined;
@@ -41,7 +45,20 @@ export interface PlatformServices {
 
 export function createPlatformServices(env: PlatformEnv): PlatformServices {
   const implemented = new Map<PlatformKey, SocialMediaAdapter>();
+
   implemented.set('YOUTUBE', createYouTubeAdapter());
+
+  // Instagram e Facebook compartilham a Graph API, mas são plataformas
+  // distintas para o núcleo: uma conta do Instagram e uma Página do Facebook
+  // são destinos separados, com cota e regras próprias.
+  const meta = {
+    apiVersion: env.META_API_VERSION ?? 'v21.0',
+    appSecret: env.META_APP_SECRET,
+    webhookVerifyToken: env.META_WEBHOOK_VERIFY_TOKEN,
+  };
+
+  implemented.set('INSTAGRAM', createInstagramAdapter(meta));
+  implemented.set('FACEBOOK', createFacebookAdapter(meta));
 
   const configuredPlatforms = new Set<PlatformKey>();
   for (const def of listPlatformDefinitions()) {

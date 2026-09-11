@@ -207,11 +207,8 @@ const youtube: PlatformDefinition = {
 const instagram: PlatformDefinition = {
   key: 'INSTAGRAM',
   displayName: 'Instagram',
-  isAvailable: false,
-  unavailableReason:
-    'A integração com o Instagram ainda não foi implementada neste sistema (Fase 6). ' +
-    'As capacidades abaixo vêm da documentação oficial da Meta e serão ativadas quando ' +
-    'o adapter for escrito e o app passar pela revisão da Meta.',
+  isAvailable: true,
+  unavailableReason: null,
   capabilities: {
     publishImage: cap('SUPPORTED', {
       requiresAppReview: true,
@@ -318,10 +315,8 @@ const instagram: PlatformDefinition = {
 const facebook: PlatformDefinition = {
   key: 'FACEBOOK',
   displayName: 'Facebook',
-  isAvailable: false,
-  unavailableReason:
-    'A integração com o Facebook ainda não foi implementada neste sistema (Fase 6). ' +
-    'As capacidades abaixo vêm da documentação oficial da Meta.',
+  isAvailable: true,
+  unavailableReason: null,
   capabilities: {
     publishText: cap('SUPPORTED', { requiresAppReview: true, requiresBusinessAccount: true }),
     publishImage: cap('SUPPORTED', { requiresAppReview: true, requiresBusinessAccount: true }),

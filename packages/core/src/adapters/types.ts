@@ -89,8 +89,25 @@ export interface TokenExchangeResult {
 // ---------------------------------------------------------------------------
 
 export interface PublishMediaInput {
-  /** Stream do arquivo vindo do storage. */
+  /**
+   * Stream do arquivo vindo do storage, para as plataformas que RECEBEM os
+   * bytes (YouTube, TikTok).
+   */
   stream: () => NodeJS.ReadableStream;
+
+  /**
+   * URL temporária e assinada de onde a plataforma pode BUSCAR a mídia.
+   *
+   * A Meta não aceita upload direto na publicação: ela exige que o arquivo
+   * esteja numa URL pública que os servidores dela consigam alcançar. Os dois
+   * modelos coexistem no contrato porque são exigências reais de plataformas
+   * diferentes — um adapter que precise deste campo e não o receba deve
+   * falhar de forma explícita, nunca inventar uma URL.
+   *
+   * A URL precisa continuar válida durante todo o processamento remoto: a
+   * Meta leva até alguns minutos para buscar e transcodificar um vídeo.
+   */
+  publicUrl?: string;
   mimeType: string;
   sizeBytes: number;
   filename: string;

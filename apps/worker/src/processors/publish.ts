@@ -52,6 +52,9 @@ const targetInclude = {
       timezone: true,
       status: true,
       organizationId: true,
+      // Id da conta NA PLATAFORMA (channel id, page id, ig user id).
+      // É com ele que o adapter monta o caminho da chamada.
+      remoteId: true,
     },
   },
   post: {
@@ -182,6 +185,7 @@ async function publishNow(
   if (!post) throw new Error('Publicação não encontrada para este destino.');
 
   const content = post.content;
+  const remoteAccountId = target.socialAccount.remoteId;
 
   // Conteúdo gerado por IA exige revisão humana antes de publicar
   // (SPEC seção 6). O worker é a última barreira.
@@ -226,12 +230,35 @@ async function publishNow(
     target.socialAccountId,
   );
 
+  /**
+   * Algumas plataformas RECEBEM os bytes (YouTube, TikTok); outras BUSCAM a
+   * mídia numa URL pública (Meta). Fornecemos os dois, e cada adapter usa o
+   * que a sua API exige.
+   *
+   * A URL vale 1 hora: a Meta leva minutos para buscar e transcodificar, e
+   * uma URL que expira no meio faz o contêiner falhar sem motivo aparente.
+   */
+  const midias = await Promise.all(
+    content.media.map(async (link) => ({
+      link,
+      publicUrl: await container.storage
+        .getSignedDownloadUrl(link.mediaAsset.storageKey, 3600)
+        .catch(() => undefined),
+    })),
+  );
+
   const input: PublishInput = {
     idempotencyKey: target.idempotencyKey,
     body: variant.body,
     hashtags: variant.hashtags,
-    platformFields: variant.platformFields,
-    media: content.media.map((link) => ({
+    platformFields: {
+      ...variant.platformFields,
+      // O id da conta NA PLATAFORMA (canal, Página, conta do Instagram).
+      // O adapter precisa dele para montar o caminho da chamada, e ele não
+      // pertence ao conteúdo — vem da conta conectada.
+      __remoteAccountId: remoteAccountId,
+    },
+    media: midias.map(({ link, publicUrl }) => ({
       // Stream sob demanda: um vídeo de 2 GB não pode ser carregado em
       // memória, e o adapter pode precisar reabrir o stream para retomar.
       // O contrato do adapter é síncrono, mas abrir o objeto no storage é
@@ -253,6 +280,7 @@ async function publishNow(
       mimeType: link.mediaAsset.mimeType,
       sizeBytes: Number(link.mediaAsset.sizeBytes),
       filename: link.mediaAsset.originalFilename,
+      ...(publicUrl ? { publicUrl } : {}),
       ...(link.mediaAsset.durationMs !== null ? { durationMs: link.mediaAsset.durationMs } : {}),
       ...(link.mediaAsset.width !== null ? { width: link.mediaAsset.width } : {}),
       ...(link.mediaAsset.height !== null ? { height: link.mediaAsset.height } : {}),

@@ -104,6 +104,9 @@ const envSchema = z.object({
   YOUTUBE_PROJECT_DAILY_QUOTA: z.coerce.number().int().positive().default(100),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
+  // Token do desafio de subscrição de webhook, cadastrado no console da Meta.
+  // Sem ele o verificador não é montado e o endpoint responde 501.
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
   META_API_VERSION: z.string().default('v21.0'),
   TIKTOK_CLIENT_KEY: z.string().optional(),
   TIKTOK_CLIENT_SECRET: z.string().optional(),

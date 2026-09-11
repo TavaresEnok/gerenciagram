@@ -1,4 +1,5 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Readable } from 'node:stream';
 
 /**
@@ -14,6 +15,16 @@ export interface Storage {
   getObjectStream(key: string): Promise<Readable>;
   getObjectBuffer(key: string): Promise<Buffer>;
   putObject(key: string, body: Buffer, contentType: string): Promise<void>;
+
+  /**
+   * URL assinada e temporária de onde uma plataforma pode BUSCAR a mídia.
+   *
+   * A Meta não aceita upload direto: ela exige que o arquivo esteja numa URL
+   * que os servidores dela alcancem. A validade precisa cobrir todo o
+   * processamento remoto — a Meta leva minutos para buscar e transcodificar
+   * um vídeo, e uma URL que expira no meio faz o contêiner falhar.
+   */
+  getSignedDownloadUrl(key: string, expiresInSeconds?: number): Promise<string>;
 }
 
 export interface S3Config {
@@ -56,6 +67,12 @@ export class S3Storage implements Storage {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
     }
     return Buffer.concat(chunks);
+  }
+
+  async getSignedDownloadUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
+      expiresIn: expiresInSeconds,
+    });
   }
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {

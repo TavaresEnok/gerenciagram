@@ -130,6 +130,10 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
       },
       getObjectBuffer: async () => Buffer.from('conteudo-de-teste'),
       putObject: async () => undefined,
+      // URL fixa e claramente falsa: nenhum teste aqui chega a buscá-la, e um
+      // endereço que parecesse real esconderia um teste que a usasse por engano.
+      getSignedDownloadUrl: async (key: string) =>
+        `https://storage.invalid/${encodeURIComponent(key)}?assinatura=teste`,
     },
     mailer: { send: async () => undefined },
     keyring,
