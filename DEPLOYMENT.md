@@ -289,3 +289,69 @@ openssl rand -base64 32   # ENCRYPTION_KEY
 > **não** serve — em JavaScript a string `"false"` é *truthy*, e
 > `SMTP_SECURE=false` viraria `true`, fazendo a conexão tentar TLS numa porta
 > em texto claro. Este bug existiu e foi corrigido.
+
+---
+
+## Teste de carga
+
+Mede os dois alvos numéricos da SPEC seção 2: p95 ≤ 300ms nos endpoints
+síncronos e job de publicação processado dentro de poucos minutos do horário.
+
+```bash
+pnpm build            # o teste roda contra o bundle, não contra o tsx watch
+pnpm load:api         # sobe uma API na 3002, com o rate limiter afrouxado
+pnpm load:test
+```
+
+São dois comandos porque o rate limiter da API (300 req/min por usuário, e
+está certo assim) é menor que a carga do teste. Medir com ele no caminho
+mediria o limiter, não os endpoints — e a instância de desenvolvimento
+continua intacta na 3001.
+
+O script cria a própria organização, com sufixo aleatório, e não apaga nem
+altera nada existente. Ele se recusa a rodar com `APP_ENV=production`.
+
+### Resultado medido (2026-09-11)
+
+Windows 11, Postgres e Redis em Docker, API e carga na mesma máquina — ou
+seja, cliente e servidor disputando CPU. Num servidor dedicado os números
+tendem a ser melhores, não piores.
+
+Perfil: 50 contas num grupo, 300 requisições por endpoint.
+
+| Endpoint | 25 em voo | 50 em voo |
+|---|---|---|
+| `GET /dashboard` | — | p95 111ms |
+| `GET /posts` | — | p95 82ms |
+| `GET /contents` | — | p95 101ms |
+| `GET /accounts` | p95 138ms | p95 255ms |
+| `GET /groups` | — | p95 168ms |
+| `GET /analytics/overview` | — | p95 109ms |
+| `POST /groups/resolve` | — | p95 95ms |
+| `POST /posts/preview` (50 destinos) | **p95 248ms** | **p95 476ms** |
+
+Entrega da fila: atraso p95 de 90ms depois do horário agendado, contra um
+alvo de "poucos minutos" — três ordens de grandeza de folga.
+
+**O limite prático está no `preview`**, que é o endpoint mais pesado: resolve
+o grupo, valida cada destino (mídia, cota, conteúdo duplicado, campos
+obrigatórios da rede) e converte fuso conta a conta. Com 50 destinos ele
+sustenta ~120 req/s por processo, e o p95 cruza os 300ms por volta de **30
+previews simultâneos**. Até 25 simultâneos fica dentro do alvo.
+
+Isso é saturação, não defeito: a latência aí é `concorrência ÷ vazão`, e o
+caminho é escalar horizontalmente — a API é stateless exatamente para isso.
+Vale dizer que 30 previews de 50 contas *ao mesmo tempo* é um pico
+considerável: preview é ação humana, um clique por vez.
+
+Uma otimização de fuso horário foi **medida e descartada**: `isValidTimezone` e
+`formatInTimezone` custam ~7µs e ~14µs por chamada, o que dá ~1,4ms para 50
+destinos. Não é o gargalo, e cachear ali só acrescentaria estado sem ganho.
+
+### Cuidado ao interpretar
+
+O primeiro endpoint medido chegou a mostrar p99 de 2,1s até o aquecimento
+passar a rodar na mesma concorrência da medição. Não era o endpoint: o pool de
+conexões do Prisma cresce sob demanda, e 20 requisições sequenciais abriam 1 ou
+2 conexões enquanto as 20 primeiras concorrentes abriam as outras 18 de uma
+vez. Aquecimento em série mede uma coisa e a medição mede outra.

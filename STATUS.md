@@ -220,9 +220,16 @@ réplicas avaliando ao mesmo tempo, só uma manda o e-mail.
 
 **Adapters das redes oficiais:** Todos os adapters previstos para a v1 (YouTube, Instagram, Facebook, TikTok e X) estão escritos, registrados e cobertos por testes automatizados no pacote `@app/platform`. Kwai permanece fora da v1 conforme decisão documentada na SPEC seção 3.
 
-**Teste de carga (SPEC seção 5, Fase 15).** Os alvos da seção 2 (p95 ≤ 300ms,
-job processado em poucos minutos do horário) estão documentados mas não foram
-medidos sob carga.
+**Teste de carga — medido.** `pnpm load:api` + `pnpm load:test`. Os dois alvos
+da seção 2 foram atingidos: todos os endpoints síncronos ficam bem abaixo dos
+300ms no p95 com 50 requisições em voo, e a fila entrega os jobs 90ms (p95)
+depois do horário agendado, contra um alvo de "poucos minutos".
+
+O limite prático está no `preview`, o endpoint mais pesado: com 50 destinos
+ele sustenta ~120 req/s por processo e cruza os 300ms por volta de 30 previews
+simultâneos. É saturação, não defeito — a latência ali é `concorrência ÷
+vazão`, e a API é stateless justamente para escalar horizontalmente. Números,
+procedimento e duas armadilhas de interpretação estão em `DEPLOYMENT.md`.
 
 **Sentry.** Os alertas operacionais já rodam (job a cada 5 min, ver abaixo) e
 saem no log em nível de erro, que é o canal que qualquer coletor capta sem
