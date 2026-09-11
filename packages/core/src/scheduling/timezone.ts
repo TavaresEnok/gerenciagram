@@ -128,3 +128,22 @@ export function describeTimezoneDivergence(
   const unique = new Set(entries.map((e) => e.instant.getTime()));
   return { diverges: unique.size > 1, distinctInstants: unique.size };
 }
+
+/**
+ * Aplica espaçamento progressivo (anti-spam fan-out) a múltiplos alvos agendados.
+ *
+ * Cada destino subsequente recebe um acréscimo determinístico de
+ * `targetIndex * staggerMinutes * 60_000` ms, evitando publicação simultânea
+ * que possa acionar mecanismos anti-spam das plataformas sociais.
+ */
+export function applyStaggerDelay(
+  baseUtc: Date,
+  targetIndex: number,
+  staggerMinutes?: number,
+): Date {
+  if (!staggerMinutes || staggerMinutes <= 0 || targetIndex <= 0) {
+    return baseUtc;
+  }
+  return new Date(baseUtc.getTime() + targetIndex * staggerMinutes * 60_000);
+}
+

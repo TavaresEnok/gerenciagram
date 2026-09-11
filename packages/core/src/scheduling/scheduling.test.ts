@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyStaggerDelay,
   describeTimezoneDivergence,
   formatInTimezone,
   localIsoToUtc,
@@ -192,3 +193,37 @@ describe('fila por slots', () => {
     expect(formatSlot({ weekday: 0, hour: 9, minute: 5 })).toBe('Domingo às 09:05');
   });
 });
+
+describe('anti-spam fan-out (applyStaggerDelay)', () => {
+  const base = new Date('2026-09-14T13:00:00.000Z');
+
+  it('o primeiro alvo (index 0) não sofre atraso', () => {
+    const delayed = applyStaggerDelay(base, 0, 5);
+    expect(delayed.toISOString()).toBe('2026-09-14T13:00:00.000Z');
+  });
+
+  it('alvos subsequentes recebem atraso progressivo determinístico', () => {
+    const target1 = applyStaggerDelay(base, 1, 5);
+    const target2 = applyStaggerDelay(base, 2, 5);
+    const target3 = applyStaggerDelay(base, 3, 5);
+
+    expect(target1.toISOString()).toBe('2026-09-14T13:05:00.000Z');
+    expect(target2.toISOString()).toBe('2026-09-14T13:10:00.000Z');
+    expect(target3.toISOString()).toBe('2026-09-14T13:15:00.000Z');
+  });
+
+  it('não aplica atraso se staggerMinutes for zero ou indefinido', () => {
+    expect(applyStaggerDelay(base, 2, 0).toISOString()).toBe('2026-09-14T13:00:00.000Z');
+    expect(applyStaggerDelay(base, 2, undefined).toISOString()).toBe('2026-09-14T13:00:00.000Z');
+    expect(applyStaggerDelay(base, 2, -10).toISOString()).toBe('2026-09-14T13:00:00.000Z');
+  });
+
+  it('mantém monotonicidade estrita entre alvos', () => {
+    const times = [0, 1, 2, 3, 4].map((i) => applyStaggerDelay(base, i, 2).getTime());
+    for (let i = 1; i < times.length; i++) {
+      expect(times[i]!).toBeGreaterThan(times[i - 1]!);
+      expect(times[i]! - times[i - 1]!).toBe(2 * 60_000);
+    }
+  });
+});
+

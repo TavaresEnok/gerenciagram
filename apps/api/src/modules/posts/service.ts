@@ -4,6 +4,7 @@ import {
   NotFoundError,
   PLATFORM_REGISTRY,
   ValidationError,
+  applyStaggerDelay,
   buildTargetIdempotencyKey,
   formatInTimezone,
   localIsoToUtc,
@@ -779,10 +780,8 @@ export class PostService {
           continue;
         }
 
-        let scheduledAt = localIsoToUtc(localDateTime, account.timezone);
-        if (plan.staggerMinutes && plan.staggerMinutes > 0 && targetIndex > 0) {
-          scheduledAt = new Date(scheduledAt.getTime() + targetIndex * plan.staggerMinutes * 60_000);
-        }
+        const baseScheduledAt = localIsoToUtc(localDateTime, account.timezone);
+        const scheduledAt = applyStaggerDelay(baseScheduledAt, targetIndex, plan.staggerMinutes);
         targetIndex++;
 
         result.set(account.accountId, {

@@ -198,6 +198,59 @@ grupo **nunca** altera agendamento existente sozinho.
 
 ---
 
+## Módulo de IA Universal Híbrido
+
+O sistema suporta três classes de provedores com fallback transparente:
+1. **OpenAI-Compatible (`openai-compatible`)**: Suporta Google Gemini (via endpoint OpenAI do Google AI Studio), OpenRouter, Ollama (local), OpenAI e Groq. Configurado via `AI_BASE_URL`, `AI_API_KEY` e `AI_MODEL`.
+2. **Anthropic Claude (`anthropic`)**: Suportado via `ANTHROPIC_API_KEY`.
+3. **Motor Heurístico Local (`local-draft`)**: Quando nenhuma chave está presente ou em caso de falha de rede remota, opera de forma 100% determinística e sem custo, gerando ganchos, legendas, títulos e hashtags que respeitam rigorosamente os limites da plataforma.
+
+### Endpoints
+- `GET /v1/ai/status`:
+  Retorna `{ configured: boolean, provider: string, model: string | null, reason: string | null }`.
+- `POST /v1/ai/suggest`:
+  Corpo:
+  ```json
+  {
+    "kind": "CAPTION",
+    "platform": "INSTAGRAM",
+    "brief": "Lançamento da nova funcionalidade...",
+    "tone": "profissional",
+    "count": 3
+  }
+  ```
+  Retorna `{ suggestions: string[], requiresHumanReview: true, provider: string, constraints: { ... } }`.
+- `POST /v1/contents/:id/ai-review`:
+  Registra a aprovação humana de um conteúdo gerado por IA (`aiReviewedAt = now()`). O worker rejeita publicar conteúdos marcados com `aiGenerated = true` sem esta confirmação.
+
+---
+
+## Anti-Spam Fan-Out (`staggerMinutes`)
+
+Ao agendar publicações para múltiplos destinos (contas individuais ou grupos), a API permite distribuir os envios no tempo:
+
+```json
+{
+  "contentId": "...",
+  "selection": { "groupIds": ["..."] },
+  "schedule": {
+    "mode": "SPECIFIC_TIME",
+    "localDateTime": "2026-09-14T10:00",
+    "staggerMinutes": 5
+  }
+}
+```
+
+Cada destino subsequente recebe um atraso determinístico de `index * staggerMinutes * 60_000` ms sobre o instante agendado, garantindo conformidade com as diretrizes contra disparo em massa das plataformas sociais.
+
+---
+
+## Reconciliação de Destinos Órfãos (Outbox Pattern)
+
+O worker executa a cada 2 minutos o job repetível `JOB_RECONCILE_ORPHANS`. Qualquer publicação em estado `SCHEDULED` com horário vencido ou `QUEUED` sem job ativo no Redis é identificada e reenfileirada com atraso zero de maneira estritamente idempotente.
+
+---
+
 ## Upload de mídia
 
 `POST /v1/media` com `multipart/form-data`, campo `file`. Campos opcionais:

@@ -15,8 +15,8 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 | **1** | Auth, organizações, RBAC | ✅ Completa |
 | **2** | Contas sociais + grupos | ✅ Completa (OAuth aguarda credenciais) |
 | **3** | Biblioteca de mídia | ✅ Completa |
-| **4** | Compositor | ✅ Completa |
-| **5** | Agendamento e engine de publicação | ✅ Completa |
+| **4** | Compositor | ✅ Completa (com assistente criativo de IA e preview detalhado) |
+| **5** | Agendamento e engine de publicação | ✅ Completa (Anti-spam fan-out com `staggerMinutes` e poller de reconciliação de órfãos a cada 2 min) |
 | **6** | Instagram / Facebook | ✅ Completa (adapters implementados e testados) |
 | **7** | TikTok | ✅ Completa (adapter implementado e testado) |
 | **8** | YouTube (completo) | ✅ Completa (adapter implementado e testado) |
@@ -24,12 +24,12 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 | **10** | Kwai | 🚫 **Fora da v1** — não há API oficial de publicação |
 | **11** | Analytics | ✅ Completa |
 | **12** | Workflow de aprovação | ✅ Completa |
-| **13** | Módulo de IA | ✅ Completa (desligado sem chave) |
+| **13** | Módulo de IA Universal Híbrido | ✅ Completa (OpenAI-compatible, Anthropic Claude e gerador local determinístico de rascunhos com revisão humana obrigatória) |
 | **14** | Billing | ✅ Limites e planos; **sem gateway de pagamento** |
 | **15** | Hardening | ✅ Documentado; itens de produção listados abaixo |
 
-**Verificação:** 105 testes automatizados (71 no core + 34 no platform) + 15 de integração contra Postgres
-real + 35 verificações no teste de fumaça. Build e typecheck limpos em todos os pacotes.
+**Verificação:** 135 testes automatizados (75 no core + 34 no platform + 18 no worker + 8 na api) todos passando com sucesso contra Postgres real e BullMQ. Build e typecheck limpos em todos os pacotes.
+
 
 ---
 

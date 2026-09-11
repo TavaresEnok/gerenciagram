@@ -15,24 +15,29 @@ const execFileAsync = promisify(execFile);
  */
 function resolveBinaryPath(configured: string, binaryName: 'ffmpeg' | 'ffprobe'): string {
   if (existsSync(configured)) return configured;
-  if (existsSync(`${configured}.exe`)) return `${configured}.exe`;
 
-  const localAppData = process.env.LOCALAPPDATA;
-  if (localAppData) {
-    const winget = path.join(localAppData, 'Microsoft', 'WinGet', 'Links', `${binaryName}.exe`);
-    if (existsSync(winget)) return winget;
+  if (process.platform === 'win32') {
+    if (existsSync(`${configured}.exe`)) return `${configured}.exe`;
+
+    const localAppData = process.env.LOCALAPPDATA;
+    if (localAppData) {
+      const winget = path.join(localAppData, 'Microsoft', 'WinGet', 'Links', `${binaryName}.exe`);
+      if (existsSync(winget)) return winget;
+    }
+
+    const commonWinPaths = [
+      `C:\\ffmpeg\\bin\\${binaryName}.exe`,
+      `C:\\Program Files\\ffmpeg\\bin\\${binaryName}.exe`,
+      `C:\\ProgramData\\chocolatey\\bin\\${binaryName}.exe`,
+    ];
+    for (const p of commonWinPaths) {
+      if (existsSync(p)) return p;
+    }
+
+    return configured.endsWith('.exe') ? configured : `${configured}.exe`;
   }
 
-  const common = [
-    `C:\\ffmpeg\\bin\\${binaryName}.exe`,
-    `C:\\Program Files\\ffmpeg\\bin\\${binaryName}.exe`,
-    `C:\\ProgramData\\chocolatey\\bin\\${binaryName}.exe`,
-  ];
-  for (const c of common) {
-    if (existsSync(c)) return c;
-  }
-
-  return process.platform === 'win32' && !configured.endsWith('.exe') ? `${configured}.exe` : configured;
+  return configured;
 }
 
 /**
