@@ -8,6 +8,8 @@ import {
 } from '@app/core';
 import { PlatformNotConfiguredError } from '@app/core';
 import { createFacebookAdapter, createInstagramAdapter } from './adapters/meta/index.js';
+import { createTikTokAdapter } from './adapters/tiktok/index.js';
+import { createXAdapter } from './adapters/x/index.js';
 import { createYouTubeAdapter } from './adapters/youtube/index.js';
 
 /**
@@ -59,6 +61,8 @@ export function createPlatformServices(env: PlatformEnv): PlatformServices {
 
   implemented.set('INSTAGRAM', createInstagramAdapter(meta));
   implemented.set('FACEBOOK', createFacebookAdapter(meta));
+  implemented.set('TIKTOK', createTikTokAdapter());
+  implemented.set('X', createXAdapter());
 
   const configuredPlatforms = new Set<PlatformKey>();
   for (const def of listPlatformDefinitions()) {

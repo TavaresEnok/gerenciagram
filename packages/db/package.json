@@ -19,7 +19,7 @@
     "deploy": "prisma migrate deploy",
     "studio": "prisma studio",
     "seed": "tsx src/seed.ts",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {

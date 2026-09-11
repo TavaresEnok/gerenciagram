@@ -14,3 +14,6 @@ export * from './quota.js';
 export * from './circuit.js';
 
 export { createYouTubeAdapter, queryUploadOffset } from './adapters/youtube/index.js';
+export { createFacebookAdapter, createInstagramAdapter } from './adapters/meta/index.js';
+export { createTikTokAdapter } from './adapters/tiktok/index.js';
+export { createXAdapter } from './adapters/x/index.js';

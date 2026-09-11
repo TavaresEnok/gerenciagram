@@ -408,11 +408,12 @@ const facebook: PlatformDefinition = {
 const tiktok: PlatformDefinition = {
   key: 'TIKTOK',
   displayName: 'TikTok',
-  isAvailable: false,
-  unavailableReason:
-    'A integração com o TikTok ainda não foi implementada neste sistema (Fase 7). ' +
-    'Além do adapter, o Direct Post exige auditoria do aplicativo pelo TikTok: sem ela, ' +
-    'as publicações ficam restritas a SELF_ONLY e a no máximo 5 usuários por 24h.',
+  // Implementado na Fase 7. A auditoria do aplicativo pelo TikTok continua
+  // sendo um passo à parte: sem ela o Direct Post fica restrito a SELF_ONLY e
+  // a no máximo 5 usuários por 24h — mas isso é limitação do app naquele
+  // ambiente, não ausência de integração, e quem informa é a própria API.
+  isAvailable: true,
+  unavailableReason: null,
   capabilities: {
     publishVideo: cap('SUPPORTED', {
       requiresAppReview: true,
@@ -593,11 +594,8 @@ const tiktok: PlatformDefinition = {
 const x: PlatformDefinition = {
   key: 'X',
   displayName: 'X',
-  isAvailable: false,
-  unavailableReason:
-    'A integração com o X ainda não foi implementada neste sistema (Fase 9). ' +
-    'Além do adapter, o acesso de escrita à API do X é pago — é preciso um plano ' +
-    'com permissão de publicação.',
+  isAvailable: true,
+  unavailableReason: null,
   capabilities: {
     publishText: cap('SUPPORTED', {
       limitation: 'O acesso de escrita exige plano pago da API do X.',

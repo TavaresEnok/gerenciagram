@@ -22,11 +22,11 @@ seção.
 
 | Rede | API oficial de publicação | Implementado aqui | Barreira principal |
 |---|---|---|---|
-| **YouTube** | Sim | ✅ Sim (Fase 0) | Cota de 100 uploads/dia **por projeto**, compartilhada por todos os clientes |
-| **Instagram** | Sim | ❌ Fase 6 | App Review + verificação de negócio + conta profissional |
-| **Facebook** | Sim | ❌ Fase 6 | App Review + permissões de Página |
-| **TikTok** | Sim | ❌ Fase 7 | Auditoria do app; sem ela, tudo sai como `SELF_ONLY` |
-| **X** | Sim (pago) | ❌ Fase 9 | Plano pago **e** proibição de conteúdo duplicado entre contas |
+| **YouTube** | Sim | ✅ Sim (Fase 0/8) | Cota de 100 uploads/dia **por projeto**, compartilhada por todos os clientes |
+| **Instagram** | Sim | ✅ Sim (Fase 6) | App Review + verificação de negócio + conta profissional |
+| **Facebook** | Sim | ✅ Sim (Fase 6) | App Review + permissões de Página |
+| **TikTok** | Sim | ✅ Sim (Fase 7) | Auditoria do app; sem ela, tudo sai como `SELF_ONLY` |
+| **X** | Sim (pago) | ✅ Sim (Fase 9) | Plano pago **e** proibição de conteúdo duplicado entre contas |
 | **Kwai** | **Não** | ❌ Fora da v1 | Não existe API pública de publicação para terceiros |
 
 ---

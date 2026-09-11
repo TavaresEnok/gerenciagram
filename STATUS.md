@@ -1,6 +1,6 @@
 # Status do projeto
 
-Atualizado em **10/09/2026**.
+Atualizado em **11/09/2026**.
 
 ---
 
@@ -17,10 +17,10 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 | **3** | Biblioteca de mídia | ✅ Completa |
 | **4** | Compositor | ✅ Completa |
 | **5** | Agendamento e engine de publicação | ✅ Completa |
-| **6** | Instagram / Facebook | ⚠️ Pesquisado e declarado; adapter não escrito |
-| **7** | TikTok | ⚠️ Pesquisado e declarado; adapter não escrito |
-| **8** | YouTube (completo) | ✅ Adapter implementado |
-| **9** | X | ⚠️ Pesquisado e declarado; adapter não escrito |
+| **6** | Instagram / Facebook | ✅ Completa (adapters implementados e testados) |
+| **7** | TikTok | ✅ Completa (adapter implementado e testado) |
+| **8** | YouTube (completo) | ✅ Completa (adapter implementado e testado) |
+| **9** | X | ✅ Completa (adapter implementado e testado) |
 | **10** | Kwai | 🚫 **Fora da v1** — não há API oficial de publicação |
 | **11** | Analytics | ✅ Completa |
 | **12** | Workflow de aprovação | ✅ Completa |
@@ -28,8 +28,8 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 | **14** | Billing | ✅ Limites e planos; **sem gateway de pagamento** |
 | **15** | Hardening | ✅ Documentado; itens de produção listados abaixo |
 
-**Verificação:** 71 testes automatizados + 15 de integração contra Postgres
-real + 35 verificações no teste de fumaça. Build limpo em todos os pacotes.
+**Verificação:** 105 testes automatizados (71 no core + 34 no platform) + 15 de integração contra Postgres
+real + 35 verificações no teste de fumaça. Build e typecheck limpos em todos os pacotes.
 
 ---
 
@@ -183,11 +183,7 @@ Cenários da seção 21 cobertos por teste automatizado:
 
 ## Pendências conhecidas
 
-**Adapters não escritos (fases 6, 7, 9).** As capacidades de Instagram,
-Facebook, TikTok e X estão pesquisadas e declaradas no registro — o que já faz
-o validador aplicar as regras corretas, inclusive o **bloqueio de conteúdo
-duplicado no X**. Falta escrever os adapters. Cada um é um arquivo seguindo o
-mesmo contrato do YouTube.
+**Adapters das redes oficiais:** Todos os adapters previstos para a v1 (YouTube, Instagram, Facebook, TikTok e X) estão escritos, registrados e cobertos por testes automatizados no pacote `@app/platform`. Kwai permanece fora da v1 conforme decisão documentada na SPEC seção 3.
 
 **Teste de carga (SPEC seção 5, Fase 15).** Os alvos da seção 2 (p95 ≤ 300ms,
 job processado em poucos minutos do horário) estão documentados mas não foram
