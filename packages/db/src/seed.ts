@@ -11,8 +11,8 @@ loadEnv({
 });
 
 import { hasCredentials, listPlatformDefinitions } from '@app/core';
-import { PrismaClient } from '@prisma/client';
-import type { Prisma } from '@prisma/client';
+import { PrismaClient } from '../generated/client/index.js';
+import type { Prisma } from '../generated/client/index.js';
 
 /**
  * Seed idempotente (roda quantas vezes precisar).

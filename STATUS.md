@@ -119,7 +119,7 @@ O raciocínio completo está em [`ARCHITECTURE.md`](ARCHITECTURE.md). O resumo:
 
 ## Bugs encontrados e corrigidos durante a implementação
 
-Quatro problemas reais que só apareceram ao montar o sistema:
+Cinco problemas reais que só apareceram ao montar o sistema:
 
 **1. `z.coerce.boolean()` lê `"false"` como `true`.**
 Em JavaScript a string `"false"` é *truthy*. Afetava `COOKIE_SECURE` (cookie
@@ -141,7 +141,16 @@ Dava para gerar um relatório e não conseguir listá-lo nem baixá-lo. Encontra
 pelo teste de fumaça; corrigido com teste de regressão que exige as duas
 permissões juntas.
 
-**4. Falha de SMTP derrubava o cadastro.**
+**4. Os Dockerfiles de produção não construíam.**
+Foram escritos antes de `@app/platform` existir e nunca copiavam nem
+compilavam o pacote. Além disso, `pnpm deploy --prod` monta um
+`node_modules` novo e o Prisma Client gerado ficava para trás — a imagem
+subia e morria com *"@prisma/client did not initialize yet"*. Corrigido
+emitindo o client **dentro** do pacote (`packages/db/generated`), que o
+deploy carrega junto. As três imagens agora constroem, e a da API passa nas
+35 verificações do teste de fumaça rodando em container.
+
+**5. Falha de SMTP derrubava o cadastro.**
 A conta era criada e a requisição respondia 500. Agora o envio do e-mail de
 verificação falha em silêncio (com log de erro) e o usuário pode pedir reenvio.
 
@@ -193,6 +202,10 @@ ação de duplicar para outra data/rede não tem endpoint.
 **Alertas.** As métricas técnicas existem no painel admin (tamanho de fila,
 taxa de falha por plataforma, circuitos, dead-letter). Falta ligá-las a um
 sistema de alerta — o `SENTRY_DSN` está previsto no `.env`.
+
+**Aviso de depreciação do Fastify.** `disableRequestLogging` sai no Fastify 6,
+substituída por `logController` — que exige implementar um contrato de 10
+métodos, não só trocar o nome. Fica para o upgrade; até lá a opção funciona.
 
 **Teste de restauração de backup.** O procedimento está documentado em
 `DEPLOYMENT.md` e nunca foi executado neste ambiente. Backup não restaurado não

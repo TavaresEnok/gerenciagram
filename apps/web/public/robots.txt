@@ -1,0 +1,5 @@
+# Esta é uma aplicação autenticada: não há conteúdo público para indexar.
+# As telas de login e cadastro também ficam fora do índice — aparecer numa
+# busca por "entrar" não traz usuário e só ajuda quem procura alvo.
+User-agent: *
+Disallow: /

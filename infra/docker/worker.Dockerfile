@@ -17,15 +17,21 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
+COPY packages/platform/package.json packages/platform/
 COPY apps/worker/package.json apps/worker/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter @app/worker... --filter @app/core --filter @app/db
+    pnpm install --frozen-lockfile \
+      --filter @app/worker... \
+      --filter @app/core \
+      --filter @app/db \
+      --filter @app/platform
 
 FROM base AS dev
 ENV NODE_ENV=development
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages/core/node_modules ./packages/core/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
+COPY --from=deps /app/packages/platform/node_modules ./packages/platform/node_modules
 COPY --from=deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY . .
 RUN pnpm --filter @app/db exec prisma generate
@@ -37,8 +43,9 @@ COPY . .
 RUN pnpm --filter @app/db exec prisma generate \
  && pnpm --filter @app/core run build \
  && pnpm --filter @app/db run build \
+ && pnpm --filter @app/platform run build \
  && pnpm --filter @app/worker run build \
- && pnpm deploy --filter @app/worker --prod /prod/worker
+ && pnpm deploy --legacy --filter @app/worker --prod /prod/worker
 
 FROM base AS production
 ENV NODE_ENV=production

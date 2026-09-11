@@ -27,3 +27,6 @@ infra/docker/data/
 # Artefatos de mídia gerados em testes
 tmp/
 uploads/
+
+# Prisma Client gerado (emitido dentro do pacote para o deploy carregá-lo)
+packages/db/generated/

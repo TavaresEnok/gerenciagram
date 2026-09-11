@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma } from '@prisma/client';
+import { PrismaClient, Prisma } from '../generated/client/index.js';
 
 /**
  * Cliente Prisma e as garantias de multi-tenant.
@@ -13,7 +13,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
  *     silencioso entre organizações numa exceção.
  */
 
-export * from '@prisma/client';
+export * from '../generated/client/index.js';
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 

@@ -27,7 +27,12 @@ export async function buildApp(container: Container): Promise<AppInstance> {
     // deixaria qualquer cliente forjar o IP usado no rate limit.
     trustProxy: env.APP_ENV !== 'development',
     // Desligamos o log automático do Fastify: o nosso (plugins/context) já
-    // emite um por resposta, com correlation id e duração.
+    // emite um por resposta, com correlation id, rota e duração.
+    //
+    // A opção está marcada como depreciada e sai no Fastify 6, substituída
+    // por `logController`. A migração não é uma troca de nome: `logController`
+    // exige implementar o contrato inteiro (10 métodos). Fica para quando o
+    // upgrade para o Fastify 6 acontecer — até lá, a opção funciona.
     disableRequestLogging: true,
     bodyLimit: 5 * 1024 * 1024,
     requestIdHeader: false,

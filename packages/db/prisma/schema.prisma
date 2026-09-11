@@ -16,6 +16,13 @@
 
 generator client {
   provider        = "prisma-client-js"
+  // Emitido DENTRO do pacote, e não no node_modules compartilhado.
+  //
+  // `pnpm deploy --prod` monta um node_modules novo a partir do store, e o
+  // client gerado no build ficaria para trás — a imagem de produção subia e
+  // morria com "@prisma/client did not initialize yet". Emitindo aqui, o
+  // client viaja junto com o pacote.
+  output          = "../generated/client"
   binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
   previewFeatures = []
 }
