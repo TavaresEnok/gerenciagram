@@ -15,6 +15,8 @@ import {
   Selecao,
   Vazio,
 } from '@/components/ui';
+import { Check, Copy, Sparkles, Wand2 } from 'lucide-react';
+import { useToast } from '@/components/toast';
 import { ApiError, api } from '@/lib/api';
 import { useApi } from '@/lib/sessao';
 
@@ -144,6 +146,21 @@ export default function PaginaCompositor() {
   // --- Agendamento ---
   const [modo, setModo] = useState<Modo>('SPECIFIC_TIME');
   const [dataHoraLocal, setDataHoraLocal] = useState(proximaHoraCheia());
+  const [espacamentoMinutos, setEspacamentoMinutos] = useState<number>(0);
+
+  // --- Notificações & Feedback ---
+  const { sucesso, erro: toastErro, info: toastInfo } = useToast();
+
+  // --- Assistente Criativo com IA ---
+  const [modalIaAberto, setModalIaAberto] = useState(false);
+  const [iaBrief, setIaBrief] = useState('');
+  const [iaKind, setIaKind] = useState<'CAPTION' | 'TITLE' | 'HASHTAGS' | 'VARIATIONS'>('CAPTION');
+  const [iaPlatform, setIaPlatform] = useState<string>('INSTAGRAM');
+  const [iaTone, setIaTone] = useState<string>('descontraído e envolvente');
+  const [iaGerando, setIaGerando] = useState(false);
+  const [iaSugestoes, setIaSugestoes] = useState<string[]>([]);
+  const [iaProvider, setIaProvider] = useState<string | null>(null);
+  const [iaCopiado, setIaCopiado] = useState<number | null>(null);
 
   // --- Preview ---
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -237,7 +254,11 @@ export default function PaginaCompositor() {
             groupIds: gruposSelecionados.length > 0 ? gruposSelecionados : undefined,
             accountIds: contasSelecionadas.length > 0 ? contasSelecionadas : undefined,
           },
-          schedule: { mode: modo, localDateTime: modo === 'SPECIFIC_TIME' ? dataHoraLocal : undefined },
+          schedule: {
+            mode: modo,
+            localDateTime: modo === 'SPECIFIC_TIME' ? dataHoraLocal : undefined,
+            staggerMinutes: espacamentoMinutos > 0 ? espacamentoMinutos : undefined,
+          },
         },
       });
 
@@ -258,6 +279,7 @@ export default function PaginaCompositor() {
     contasSelecionadas,
     modo,
     dataHoraLocal,
+    espacamentoMinutos,
   ]);
 
   async function agendar(parcial: boolean) {
@@ -272,7 +294,7 @@ export default function PaginaCompositor() {
           method: 'POST',
           // Chave de idempotência: um duplo clique não cria duas publicações
           // para as mesmas contas (SPEC seção 2).
-          idempotencyKey: `composer-${contentId}-${dataHoraLocal}-${modo}`,
+          idempotencyKey: `composer-${contentId}-${dataHoraLocal}-${modo}-${espacamentoMinutos}`,
           body: {
             contentId,
             selection: {
@@ -282,17 +304,75 @@ export default function PaginaCompositor() {
             schedule: {
               mode: modo,
               localDateTime: modo === 'SPECIFIC_TIME' ? dataHoraLocal : undefined,
+              staggerMinutes: espacamentoMinutos > 0 ? espacamentoMinutos : undefined,
             },
             allowPartial: parcial,
           },
         },
       );
 
+      sucesso('Publicação agendada com sucesso!');
       router.push(`/fila?post=${resultado.postId}`);
     } catch (caught) {
       setErro(caught instanceof ApiError ? caught.message : 'Não foi possível agendar.');
       setProcessando(false);
     }
+  }
+
+  async function gerarSugestaoIa() {
+    if (!iaBrief.trim()) {
+      toastErro('Informe o assunto ou briefing para a IA.');
+      return;
+    }
+    setIaGerando(true);
+    setIaSugestoes([]);
+
+    try {
+      const resp = await api<{
+        suggestions: string[];
+        provider: string;
+        requiresHumanReview: boolean;
+      }>('/v1/ai/suggest', {
+        method: 'POST',
+        body: {
+          kind: iaKind,
+          platform: iaPlatform,
+          brief: iaBrief,
+          tone: iaTone || undefined,
+          count: 3,
+        },
+      });
+
+      setIaSugestoes(resp.suggestions);
+      setIaProvider(resp.provider);
+      sucesso('Sugestões geradas!', `Motor ativo: ${resp.provider}`);
+    } catch (caught) {
+      toastErro(
+        'Falha ao gerar sugestões',
+        caught instanceof ApiError ? caught.message : String(caught),
+      );
+    } finally {
+      setIaGerando(false);
+    }
+  }
+
+  function aplicarSugestao(texto: string) {
+    if (iaKind === 'TITLE') {
+      setTitulo(texto);
+    } else if (iaKind === 'CAPTION' || iaKind === 'VARIATIONS') {
+      setCorpo(texto);
+    } else if (iaKind === 'HASHTAGS') {
+      setHashtags(texto.replace(/#/g, '').trim());
+    }
+    setModalIaAberto(false);
+    sucesso('Conteúdo aplicado ao post!', 'Lembre-se: conteúdo de IA requer revisão humana.');
+  }
+
+  function copiarSugestao(texto: string, idx: number) {
+    void navigator.clipboard.writeText(texto);
+    setIaCopiado(idx);
+    setTimeout(() => setIaCopiado(null), 2000);
+    toastInfo('Copiado para a área de transferência!');
   }
 
   if (carregandoContas) return <Carregando />;
@@ -328,6 +408,16 @@ export default function PaginaCompositor() {
           <Cartao
             titulo="1. Conteúdo mestre"
             descricao="O texto base. Cada rede pode ter a própria variação depois."
+            acoes={
+              <Botao
+                variante="secundaria"
+                onClick={() => setModalIaAberto(true)}
+                className="flex items-center gap-1.5 text-xs py-1 px-2.5"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                Assistente de IA
+              </Botao>
+            }
           >
             <div className="space-y-4">
               <Campo
@@ -519,13 +609,26 @@ export default function PaginaCompositor() {
               </Selecao>
 
               {modo === 'SPECIFIC_TIME' ? (
-                <Campo
-                  rotulo="Data e hora"
-                  type="datetime-local"
-                  value={dataHoraLocal}
-                  onChange={(evento) => setDataHoraLocal(evento.target.value)}
-                  dica="Interpretado no fuso de CADA conta de destino."
-                />
+                <>
+                  <Campo
+                    rotulo="Data e hora"
+                    type="datetime-local"
+                    value={dataHoraLocal}
+                    onChange={(evento) => setDataHoraLocal(evento.target.value)}
+                    dica="Interpretado no fuso de CADA conta de destino."
+                  />
+                  <Campo
+                    rotulo="Anti-Spam / Intervalo entre contas (min)"
+                    type="number"
+                    min="0"
+                    max="180"
+                    value={espacamentoMinutos.toString()}
+                    onChange={(evento) =>
+                      setEspacamentoMinutos(Math.max(0, parseInt(evento.target.value, 10) || 0))
+                    }
+                    dica="Adiciona um espaçamento progressivo entre contas para evitar disparo simultâneo."
+                  />
+                </>
               ) : (
                 <Aviso tom="info">
                   Cada conta entra no próximo horário livre da própria grade semanal. Contas sem
@@ -623,6 +726,130 @@ export default function PaginaCompositor() {
             <Botao variante="primaria" onClick={() => setSeletorMidia(false)}>
               Concluir ({midiasSelecionadas.length})
             </Botao>
+          </div>
+        </Modal>
+      )}
+
+      {modalIaAberto && (
+        <Modal
+          aberto
+          aoFechar={() => setModalIaAberto(false)}
+          titulo="Assistente Criativo com IA ✨"
+          largura="lg"
+        >
+          <div className="space-y-4">
+            <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 text-xs text-texto leading-relaxed">
+              <span className="font-semibold">Revisão humana obrigatória:</span> Todo conteúdo sugerido pela IA nasce como rascunho e exige validação de um integrante da equipe antes da publicação.
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Selecao
+                rotulo="Tipo de geração"
+                value={iaKind}
+                onChange={(e) => setIaKind(e.target.value as any)}
+              >
+                <option value="CAPTION">Legenda completa</option>
+                <option value="TITLE">Título atraente</option>
+                <option value="HASHTAGS">Conjunto de hashtags</option>
+                <option value="VARIATIONS">Variações criativas</option>
+              </Selecao>
+
+              <Selecao
+                rotulo="Rede de destino"
+                value={iaPlatform}
+                onChange={(e) => setIaPlatform(e.target.value)}
+              >
+                <option value="INSTAGRAM">Instagram</option>
+                <option value="TIKTOK">TikTok</option>
+                <option value="YOUTUBE">YouTube</option>
+                <option value="FACEBOOK">Facebook</option>
+                <option value="THREADS">Threads</option>
+                <option value="X">X (Twitter)</option>
+                <option value="LINKEDIN">LinkedIn</option>
+                <option value="PINTEREST">Pinterest</option>
+              </Selecao>
+            </div>
+
+            <Campo
+              rotulo="Tom de voz"
+              value={iaTone}
+              onChange={(e) => setIaTone(e.target.value)}
+              placeholder="Ex.: profissional, persuasivo, bem-humorado, informativo"
+            />
+
+            <AreaTexto
+              rotulo="Assunto / Briefing do post"
+              value={iaBrief}
+              onChange={(e) => setIaBrief(e.target.value)}
+              placeholder="Ex.: Lançamento da nova funcionalidade de agendamento automático com anti-spam fan-out..."
+              rows={3}
+            />
+
+            <div className="flex items-center justify-between pt-2">
+              {iaProvider ? (
+                <span className="text-xs text-suave">
+                  Motor ativo: <span className="font-mono text-texto">{iaProvider}</span>
+                </span>
+              ) : (
+                <span className="text-xs text-suave">Motor Universal Híbrido: Gemini, Claude ou Heurístico Local</span>
+              )}
+              <Botao
+                variante="primaria"
+                carregando={iaGerando}
+                disabled={!iaBrief.trim()}
+                onClick={() => void gerarSugestaoIa()}
+                className="flex items-center gap-1.5"
+              >
+                <Wand2 className="h-4 w-4" />
+                Gerar sugestões
+              </Botao>
+            </div>
+
+            {iaSugestoes.length > 0 && (
+              <div className="mt-4 space-y-3 border-t border-borda pt-4">
+                <p className="text-xs font-semibold text-suave uppercase tracking-wide">
+                  Opções geradas ({iaSugestoes.length})
+                </p>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {iaSugestoes.map((sugestao, idx) => (
+                    <div
+                      key={idx}
+                      className="rounded-xl border border-borda bg-fundo p-3 transition hover:border-primaria/50"
+                    >
+                      <p className="whitespace-pre-wrap text-xs text-texto leading-relaxed">
+                        {sugestao}
+                      </p>
+                      <div className="mt-3 flex items-center justify-end gap-2 border-t border-borda/60 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => copiarSugestao(sugestao, idx)}
+                          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-suave hover:bg-superficie hover:text-texto transition"
+                        >
+                          {iaCopiado === idx ? (
+                            <>
+                              <Check className="h-3.5 w-3.5 text-sucesso" />
+                              Copiado!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3.5 w-3.5" />
+                              Copiar
+                            </>
+                          )}
+                        </button>
+                        <Botao
+                          variante="secundaria"
+                          onClick={() => aplicarSugestao(sugestao)}
+                          className="text-xs py-1 px-2.5"
+                        >
+                          Aplicar no post
+                        </Botao>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}

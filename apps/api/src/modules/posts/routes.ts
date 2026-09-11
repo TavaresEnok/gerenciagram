@@ -66,6 +66,8 @@ const scheduleSchema = z.object({
       }),
     )
     .optional(),
+  /** Espaçamento em minutos entre publicações em contas diferentes (anti-spam fan-out). */
+  staggerMinutes: z.number().int().min(0).max(180).optional(),
 });
 
 const targetViewSchema = z.object({

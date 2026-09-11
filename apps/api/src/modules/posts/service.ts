@@ -46,7 +46,10 @@ export interface SchedulePlan {
   localDateTime?: string;
   /** Ajuste fino por conta, sobrepondo o horário geral. */
   perAccount?: Array<{ accountId: string; localDateTime: string }>;
+  /** Espaçamento em minutos entre contas para evitar disparo simultâneo em massa (anti-spam fan-out). */
+  staggerMinutes?: number;
 }
+
 
 export interface PreviewTarget {
   accountId: string;
@@ -764,6 +767,7 @@ export class PostService {
         (plan.perAccount ?? []).map((entry) => [entry.accountId, entry.localDateTime]),
       );
 
+      let targetIndex = 0;
       for (const account of accounts) {
         const localDateTime = perAccount.get(account.accountId) ?? plan.localDateTime;
 
@@ -775,8 +779,14 @@ export class PostService {
           continue;
         }
 
+        let scheduledAt = localIsoToUtc(localDateTime, account.timezone);
+        if (plan.staggerMinutes && plan.staggerMinutes > 0 && targetIndex > 0) {
+          scheduledAt = new Date(scheduledAt.getTime() + targetIndex * plan.staggerMinutes * 60_000);
+        }
+        targetIndex++;
+
         result.set(account.accountId, {
-          scheduledAt: localIsoToUtc(localDateTime, account.timezone),
+          scheduledAt,
         });
       }
 

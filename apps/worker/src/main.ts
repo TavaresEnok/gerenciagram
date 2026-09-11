@@ -14,11 +14,13 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { closeWorkerContainer, createWorkerContainer, type WorkerContainer } from './container.js';
 import { recordDeadLetter } from './lib/dead-letter.js';
 import { processCollectMetrics } from './processors/analytics.js';
-import { applyRetention, processDataDeletion } from './processors/maintenance.js';
+import { applyRetention, processDataDeletion, reconcileOrphanTargets } from './processors/maintenance.js';
 import { processMedia } from './processors/media.js';
 import { processPublishTarget } from './processors/publish.js';
 import { processGenerateReport } from './processors/reports.js';
 import { processTokenRefresh, scanExpiringTokens } from './processors/tokens.js';
+
+const JOB_RECONCILE_ORPHANS = 'maintenance:reconcile-orphans';
 
 /**
  * Processo de workers.
@@ -99,6 +101,12 @@ async function main(): Promise<void> {
   };
 
   // --- Publicação ----------------------------------------------------------
+  const publishQueue = new Queue(QUEUE_NAMES.publish, {
+    connection: { url: env.REDIS_URL, maxRetriesPerRequest: null },
+    prefix: env.QUEUE_PREFIX,
+  });
+  queues.push(publishQueue);
+
   makeWorker(
     QUEUE_NAMES.publish,
     (job) => processPublishTarget(container, job as never),
@@ -163,6 +171,10 @@ async function main(): Promise<void> {
         await processDataDeletion(container, job as never);
         return;
       }
+      if (job.name === JOB_RECONCILE_ORPHANS) {
+        await reconcileOrphanTargets(container, publishQueue);
+        return;
+      }
       logger.warn({ jobName: job.name }, 'job de manutenção desconhecido');
     },
     1,
@@ -194,6 +206,17 @@ async function main(): Promise<void> {
       // 3h da manhã, quando o volume de publicação é menor.
       repeat: { pattern: '0 3 * * *' },
       jobId: 'repeat:apply-retention',
+      removeOnComplete: true,
+    },
+  );
+
+  await maintenanceQueue.add(
+    JOB_RECONCILE_ORPHANS,
+    { correlationId: 'reconcile-orphans' },
+    {
+      // A cada 2 minutos verifica se algum destino SCHEDULED ou QUEUED ficou órfão.
+      repeat: { pattern: '*/2 * * * *' },
+      jobId: 'repeat:reconcile-orphans',
       removeOnComplete: true,
     },
   );

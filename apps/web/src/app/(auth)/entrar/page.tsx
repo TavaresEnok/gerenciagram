@@ -28,8 +28,8 @@ export default function PaginaEntrar() {
   const router = useRouter();
 
   const [etapa, setEtapa] = useState<Etapa>('CREDENCIAIS');
-  const [email, setEmail] = useState('');
-  const [senha, setSenha] = useState('');
+  const [email, setEmail] = useState('enok@exemplo.com.br');
+  const [senha, setSenha] = useState('SenhaForte@2026');
   const [codigo, setCodigo] = useState('');
   const [desafio, setDesafio] = useState('');
   const [erro, setErro] = useState<string | null>(null);

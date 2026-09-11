@@ -116,7 +116,9 @@ const envSchema = z.object({
   KWAI_CLIENT_SECRET: z.string().optional(),
 
   ANTHROPIC_API_KEY: z.string().optional(),
-  AI_MODEL: z.string().default('claude-sonnet-5'),
+  AI_BASE_URL: z.string().optional(),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().default('gemini-2.0-flash'),
 });
 
 export type Env = z.infer<typeof envSchema>;

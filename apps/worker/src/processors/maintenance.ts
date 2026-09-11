@@ -1,6 +1,10 @@
-import type { ProcessDataDeletionPayload } from '@app/core';
+import {
+  JOB_PUBLISH_TARGET,
+  publishJobId,
+  type ProcessDataDeletionPayload,
+} from '@app/core';
 import { revokeAndClear } from '@app/platform';
-import type { Job } from 'bullmq';
+import type { Job, Queue } from 'bullmq';
 import type { WorkerContainer } from '../container.js';
 import { adapterContext } from '../lib/adapter-context.js';
 
@@ -217,3 +221,95 @@ export async function processDataDeletion(
     throw error;
   }
 }
+
+/**
+ * Poller de reconciliação de destinos órfãos (Outbox Pattern Recovery).
+ *
+ * Roda periodicamente (a cada 2 minutos) para garantir que nenhum agendamento
+ * fique preso no limbo caso o Redis reinicie, a conexão oscile ou o job
+ * BullMQ tenha se perdido.
+ */
+export async function reconcileOrphanTargets(
+  container: WorkerContainer,
+  publishQueue: Queue,
+): Promise<number> {
+  const log = container.logger.child({ job: 'reconcile-orphan-targets' });
+  const now = new Date();
+
+  const candidates = await container.prisma.postTarget.findMany({
+    where: {
+      deletedAt: null,
+      OR: [
+        {
+          status: 'SCHEDULED',
+          scheduledAt: { lte: new Date(now.getTime() + 60_000) },
+        },
+        {
+          status: 'QUEUED',
+          scheduledAt: { lte: new Date(now.getTime() - 5 * 60_000) },
+        },
+      ],
+    },
+    select: {
+      id: true,
+      postId: true,
+      organizationId: true,
+      platform: true,
+      scheduledAt: true,
+      idempotencyKey: true,
+      maxAttempts: true,
+      status: true,
+      jobId: true,
+    },
+    take: 50,
+  });
+
+  if (candidates.length === 0) return 0;
+
+  let recovered = 0;
+
+  for (const target of candidates) {
+    const jobId = publishJobId(target.id);
+    const existingJob = await publishQueue.getJob(jobId);
+
+    const isMissing = !existingJob;
+    const isStuck = existingJob && (await existingJob.isFailed()) && target.status === 'QUEUED';
+
+    if (isMissing || isStuck) {
+      if (existingJob) {
+        await existingJob.remove().catch(() => undefined);
+      }
+
+      await publishQueue.add(
+        JOB_PUBLISH_TARGET,
+        {
+          postTargetId: target.id,
+          organizationId: target.organizationId,
+          platform: target.platform,
+          idempotencyKey: target.idempotencyKey,
+          correlationId: `reconciled-${target.id}`,
+        },
+        {
+          jobId,
+          delay: 0,
+          attempts: target.maxAttempts,
+          backoff: { type: 'exponential', delay: 30_000 },
+        },
+      );
+
+      await container.prisma.postTarget.update({
+        where: { id: target.id },
+        data: { jobId, status: 'QUEUED' },
+      });
+
+      recovered++;
+    }
+  }
+
+  if (recovered > 0) {
+    log.warn({ recovered }, 'destinos órfãos ou pendentes recuperados e reenfileirados');
+  }
+
+  return recovered;
+}
+

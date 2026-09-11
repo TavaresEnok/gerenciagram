@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,31 @@ import type { Job } from 'bullmq';
 import type { WorkerContainer } from '../container.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve caminhos de binários do FFmpeg com fallback para WinGet, Chocolatey e diretórios padrão.
+ */
+function resolveBinaryPath(configured: string, binaryName: 'ffmpeg' | 'ffprobe'): string {
+  if (existsSync(configured)) return configured;
+  if (existsSync(`${configured}.exe`)) return `${configured}.exe`;
+
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    const winget = path.join(localAppData, 'Microsoft', 'WinGet', 'Links', `${binaryName}.exe`);
+    if (existsSync(winget)) return winget;
+  }
+
+  const common = [
+    `C:\\ffmpeg\\bin\\${binaryName}.exe`,
+    `C:\\Program Files\\ffmpeg\\bin\\${binaryName}.exe`,
+    `C:\\ProgramData\\chocolatey\\bin\\${binaryName}.exe`,
+  ];
+  for (const c of common) {
+    if (existsSync(c)) return c;
+  }
+
+  return process.platform === 'win32' && !configured.endsWith('.exe') ? `${configured}.exe` : configured;
+}
 
 /**
  * Processamento de mídia com FFmpeg (SPEC seção 6).
@@ -116,9 +142,10 @@ export async function processMedia(
 // ---------------------------------------------------------------------------
 
 async function ffprobe(container: WorkerContainer, filePath: string): Promise<FfprobeOutput> {
+  const binary = resolveBinaryPath(container.env.FFPROBE_PATH, 'ffprobe');
   try {
     const { stdout } = await execFileAsync(
-      container.env.FFPROBE_PATH,
+      binary,
       [
         '-v',
         'error',
@@ -136,7 +163,7 @@ async function ffprobe(container: WorkerContainer, filePath: string): Promise<Ff
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
       throw new Error(
-        `FFprobe não encontrado em "${container.env.FFPROBE_PATH}". ` +
+        `FFprobe não encontrado em "${binary}". ` +
           `Instale o FFmpeg ou ajuste FFPROBE_PATH no .env.`,
       );
     }
@@ -189,10 +216,11 @@ async function generateVideoThumbnail(
   log: WorkerContainer['logger'],
 ): Promise<string | null> {
   const thumbPath = path.join(workDir, 'thumb.jpg');
+  const binary = resolveBinaryPath(container.env.FFMPEG_PATH, 'ffmpeg');
 
   try {
     await execFileAsync(
-      container.env.FFMPEG_PATH,
+      binary,
       [
         '-y',
         // 1 segundo evita o quadro preto que muitos vídeos têm no início.
