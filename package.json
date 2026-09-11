@@ -23,6 +23,7 @@
     "docker:logs": "docker compose -f infra/docker/docker-compose.yml logs -f",
     "docker:reset": "docker compose -f infra/docker/docker-compose.yml --env-file .env down -v",
     "db:deploy:test": "node infra/scripts/deploy-test-db.mjs",
+    "worker:check": "node infra/scripts/worker-boot-check.mjs",
     "load:api": "node infra/scripts/api-for-load-test.mjs",
     "load:test": "node infra/scripts/load-test.mjs http://localhost:3002"
   },
