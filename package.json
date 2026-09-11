@@ -21,10 +21,12 @@
     "docker:up": "docker compose -f infra/docker/docker-compose.yml --env-file .env up -d",
     "docker:down": "docker compose -f infra/docker/docker-compose.yml --env-file .env down",
     "docker:logs": "docker compose -f infra/docker/docker-compose.yml logs -f",
-    "docker:reset": "docker compose -f infra/docker/docker-compose.yml --env-file .env down -v"
+    "docker:reset": "docker compose -f infra/docker/docker-compose.yml --env-file .env down -v",
+    "db:deploy:test": "node infra/scripts/deploy-test-db.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "dotenv": "^16.4.7",
     "eslint": "^9.18.0",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",

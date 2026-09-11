@@ -531,3 +531,77 @@ describe('similaridade de texto', () => {
     expect(textSimilarity('bolo de cenoura', 'sistema solar')).toBeLessThan(0.3);
   });
 });
+
+describe('política REAL do X (registro de plataformas)', () => {
+  /**
+   * Cenário obrigatório da SPEC seção 21, agora contra a definição de
+   * verdade — não contra uma plataforma sintética de teste.
+   *
+   * A regra de automação do X proíbe publicar conteúdo duplicado ou
+   * substancialmente semelhante em várias contas operadas pela mesma pessoa,
+   * então a política no registro é FORBIDDEN e o agendamento é barrado.
+   */
+  it('bloqueia o mesmo conteúdo em duas contas do X', () => {
+    const targets = [
+      makeTarget({
+        targetKey: 't1',
+        accountId: 'x1',
+        accountLabel: 'X 1',
+        platform: 'X',
+        title: null,
+        body: 'Promoção imperdível hoje!',
+        media: [],
+        platformFields: {},
+      }),
+      makeTarget({
+        targetKey: 't2',
+        accountId: 'x2',
+        accountLabel: 'X 2',
+        platform: 'X',
+        title: null,
+        body: 'Promoção imperdível hoje!',
+        media: [],
+        platformFields: {},
+      }),
+    ];
+
+    const result = validateTargets(targets, {
+      definitions: PLATFORM_REGISTRY,
+      configuredPlatforms: new Set<PlatformKey>(['X']),
+      quota: { accountUsage: new Map(), appUsage: new Map() },
+      now: NOW,
+    });
+
+    for (const target of result.targets) {
+      const issue = target.issues.find((i) => i.code === 'DUPLICATE_CONTENT_FORBIDDEN');
+      expect(issue?.severity).toBe('ERROR');
+      expect(issue?.message).toContain('proíbe');
+    }
+  });
+
+  it('o Kwai continua indisponível com a mensagem exigida pela SPEC', () => {
+    const definicao = PLATFORM_REGISTRY.KWAI;
+
+    expect(definicao.isAvailable).toBe(false);
+    expect(definicao.unavailableReason).toContain(
+      'não está disponível pela API oficial desta plataforma',
+    );
+    expect(definicao.capabilities.publishVideo.level).toBe('UNSUPPORTED');
+  });
+
+  it('o TikTok exige privacidade escolhida pelo usuário e consentimento', () => {
+    const campos = PLATFORM_REGISTRY.TIKTOK.requiredUxFields;
+
+    expect(campos.mustShowTargetProfile).toBe(true);
+
+    const privacidade = campos.fields.find((campo) => campo.key === 'privacy_level');
+    expect(privacidade?.required).toBe(true);
+    // As opções vêm da API por conta — fixá-las seria inventar comportamento.
+    expect(privacidade?.optionsFromApi).toBe(true);
+    expect(privacidade?.options).toHaveLength(0);
+
+    const consentimento = campos.fields.find((campo) => campo.type === 'CONSENT');
+    expect(consentimento?.required).toBe(true);
+    expect(consentimento?.consentText).toBeTruthy();
+  });
+});

@@ -1,0 +1,164 @@
+name: CI
+
+# Obrigatório antes de merge (SPEC seção 14): lint, type-check, testes e
+# verificação de vulnerabilidades em dependências.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '11.25.0'
+
+jobs:
+  verificar:
+    name: Tipos, testes e build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Os testes do worker rodam contra Postgres e Redis DE VERDADE. As
+    # garantias sendo testadas — UNIQUE por destino, UPDATE condicional na
+    # corrida entre workers, incremento atômico de cota — são do banco, e um
+    # banco falso as tornaria vazias.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gerenciador
+          POSTGRES_PASSWORD: senha_de_ci
+          POSTGRES_DB: gerenciador_test
+        options: >-
+          --health-cmd "pg_isready -U gerenciador"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgresql://gerenciador:senha_de_ci@localhost:5432/gerenciador_test?schema=public
+      DATABASE_URL_TEST: postgresql://gerenciador:senha_de_ci@localhost:5432/gerenciador_test?schema=public
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Instalar dependências
+        # --frozen-lockfile: o CI falha se o lockfile estiver desatualizado,
+        # em vez de resolver versões diferentes das que o dev testou.
+        run: pnpm install --frozen-lockfile
+
+      - name: Gerar o Prisma Client
+        run: pnpm db:generate
+
+      - name: Aplicar migrations no banco de teste
+        run: pnpm db:deploy
+
+      - name: Verificar tipos
+        run: pnpm typecheck
+
+      - name: Construir os pacotes
+        run: pnpm build
+        env:
+          # NEXT_PUBLIC_* é inlinado no bundle em build time.
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+
+      - name: Rodar os testes
+        run: pnpm test
+
+      - name: Conferir que as migrations cobrem o schema
+        # Um schema alterado sem migration correspondente passaria no build e
+        # quebraria só no deploy.
+        run: |
+          cd packages/db
+          DIFF=$(./node_modules/.bin/prisma migrate diff \
+            --from-schema-datasource prisma/schema.prisma \
+            --to-schema-datamodel prisma/schema.prisma \
+            --script)
+          if [ -n "$(echo "$DIFF" | grep -v '^--' | tr -d '[:space:]')" ]; then
+            echo "::error::O schema tem mudanças sem migration. Rode: node infra/scripts/new-migration.mjs <nome>"
+            echo "$DIFF"
+            exit 1
+          fi
+          echo "Migrations em dia com o schema."
+
+  seguranca:
+    name: Vulnerabilidades em dependências (SCA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Instalar dependências
+        run: pnpm install --frozen-lockfile
+
+      - name: Auditoria de dependências
+        # Bloqueia o merge em vulnerabilidade alta ou crítica. Moderadas
+        # aparecem no log sem travar — travar em toda moderada faz o time
+        # aprender a ignorar o alerta.
+        run: pnpm audit --audit-level high
+
+  segredos:
+    name: Segredos vazados
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Histórico completo: um segredo commitado e depois removido
+          # continua no histórico e continua comprometido.
+          fetch-depth: 0
+
+      - name: Procurar segredos no histórico
+        run: |
+          if [ -f .env ]; then
+            echo "::error::.env commitado. Ele contém segredos e está no .gitignore."
+            exit 1
+          fi
+
+          # Padrões de credencial real. O .env.example tem as chaves vazias
+          # de propósito, então não casa com nada aqui.
+          PADROES='(AIza[0-9A-Za-z_-]{35}|sk-ant-[0-9A-Za-z_-]{20,}|-----BEGIN (RSA |EC )?PRIVATE KEY-----)'
+
+          if git grep -nIE "$PADROES" -- ':!*.md' ':!pnpm-lock.yaml' ; then
+            echo "::error::Possível segredo encontrado no código."
+            exit 1
+          fi
+
+          echo "Nenhum segredo encontrado."
