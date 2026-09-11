@@ -8,7 +8,7 @@ import type { PlatformKey } from '@app/core';
  *     produz exatamente a mesma saída através de gerador pseudo-aleatório baseado em seed.
  *  2. Respeita estritamente os limites da plataforma (título, legenda, hashtags).
  *  3. Truncamento inteligente em limites de palavras e tags (nunca corta tags ao meio).
- *  4. Copy adaptada às particularidades de cada rede (X, Instagram, YouTube, LinkedIn, TikTok, etc.).
+ *  4. Copy adaptada às particularidades de cada rede (X, Instagram, Facebook, YouTube, TikTok, Kwai).
  */
 
 export interface LocalDraftInput {
@@ -188,15 +188,16 @@ function generateDeterministicCaptions(
       `Atualização rápida:\n${brief}\n\n${hashtags}`,
       `${brief}\n\nCompartilhe com sua rede.\n${hashtags}`,
     ];
-  } else if (platform === 'LINKEDIN') {
+  } else if (platform === 'TIKTOK' || platform === 'KWAI' || platform === 'YOUTUBE') {
     templates = [
-      `${brief}\n\nQuais são os principais aprendizados e desafios na sua experiência com isso? Compartilhe abaixo.\n\n${hashtags}`,
-      `Reflexão estratégica sobre o setor:\n\n${brief}\n\nConcorda com esta perspectiva?\n\n${hashtags}`,
-      `Principais destaques para acompanhar:\n\n${brief}\n\n#lideranca #inovacao ${hashtags}`,
-      `${brief}\n\nDeixe seu comentário e contribua com a discussão profissional.\n\n${hashtags}`,
-      `Análise sobre o tema [Tom: ${tone}]:\n\n${brief}\n\n${hashtags}`,
+      `${brief}\n\nAssista até o final e deixe sua opinião nos comentários!\n\n${hashtags}`,
+      `Destaque de hoje:\n${brief}\n\nCurta e siga para mais conteúdos como este.\n\n${hashtags}`,
+      `${brief}\n\nQual parte chamou mais sua atenção? Comente aqui embaixo!\n\n${hashtags}`,
+      `Dica rápida sobre o assunto:\n${brief}\n\nCompartilhe com quem precisa ver isso.\n\n${hashtags}`,
+      `${brief}\n\nNão esqueça de se inscrever/seguir para acompanhar os próximos.\n\n${hashtags}`,
     ];
   } else {
+    // INSTAGRAM, FACEBOOK e fallback geral
     templates = [
       `${brief}\n\nConfira todos os detalhes e conte para nós o que achou nos comentários!\n\n${hashtags}`,
       `Um olhar mais atento sobre este assunto:\n\n${brief}\n\nSalve este conteúdo para referência futura.\n\n${hashtags}`,

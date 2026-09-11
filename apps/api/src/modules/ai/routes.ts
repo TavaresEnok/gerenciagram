@@ -425,4 +425,6 @@ function parseLines(rawContent: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .map((line) => line.replace(/^[-*•]\s*/, '').replace(/^\d+[.)]\s*/, '').replace(/^"|"$/g, ''))
-export type { PlatformKey };
+    .filter((line) => line.length > 0);
+}
+

@@ -84,6 +84,19 @@ describe('Local Draft Heuristic Generator', () => {
     }
   });
 
+  it('gera legendas adaptadas para plataformas de vídeo (TikTok, YouTube, Kwai)', () => {
+    const input = {
+      kind: 'CAPTION' as const,
+      platform: 'TIKTOK' as const,
+      brief: 'Bastidores de uma gravação em estúdio',
+      count: 2,
+    };
+    const captions = generateLocalDraft(input, 'TikTok', { maxCaptionLength: 1000 });
+    expect(captions).toHaveLength(2);
+    expect(captions[0]).toContain('Bastidores de uma gravação em estúdio');
+    expect(captions[0]).toMatch(/comentários|curta|siga/i);
+  });
+
   it('extrai palavras-chave ignorando acentos e stop words', () => {
     const keywords = extractKeywords('Esta é uma publicação sobre inovação e estratégias para você!');
     expect(keywords).not.toContain('esta');
