@@ -5,10 +5,12 @@ import { Suspense, useState } from 'react';
 import {
   Aviso,
   Botao,
+  Campo,
   Cartao,
   Carregando,
   Etiqueta,
   EtiquetaStatus,
+  Modal,
   Selecao,
   Vazio,
 } from '@/components/ui';
@@ -169,6 +171,7 @@ function Conteudo() {
               destacado={publicacao.id === postDestacado}
               podeAgir={pode('post:retry')}
               podeCancelar={pode('post:cancel')}
+              podeDuplicar={pode('post:create')}
               aoMudar={() => void recarregar()}
               aoAvisar={setMensagem}
             />
@@ -186,6 +189,7 @@ function CartaoPublicacao({
   destacado,
   podeAgir,
   podeCancelar,
+  podeDuplicar,
   aoMudar,
   aoAvisar,
 }: {
@@ -193,11 +197,64 @@ function CartaoPublicacao({
   destacado: boolean;
   podeAgir: boolean;
   podeCancelar: boolean;
+  podeDuplicar: boolean;
   aoMudar: () => void;
   aoAvisar: (mensagem: { tom: 'sucesso' | 'erro'; texto: string }) => void;
 }) {
   const [expandido, setExpandido] = useState(destacado || publicacao.counts.failed > 0);
   const [processando, setProcessando] = useState(false);
+  const [duplicando, setDuplicando] = useState(false);
+  const [novaData, setNovaData] = useState('');
+
+  /**
+   * Reaproveita a publicação numa nova data, nas MESMAS contas.
+   *
+   * O horário é local e vale no fuso de cada conta de destino — é o mesmo
+   * contrato do compositor, e é por isso que o campo não tem fuso: "10h" quer
+   * dizer 10h para cada conta, não um instante único.
+   */
+  async function duplicar() {
+    setProcessando(true);
+
+    try {
+      const resultado = await api<{ postId: string; scheduled: number; skipped: number }>(
+        `/v1/posts/${publicacao.id}/duplicate`,
+        {
+          method: 'POST',
+          body: novaData
+            ? {
+                schedule: {
+                  mode: 'SPECIFIC_TIME',
+                  // Alguns navegadores acrescentam segundos ao datetime-local;
+                  // a API aceita exatamente AAAA-MM-DDTHH:MM.
+                  localDateTime: novaData.slice(0, 16),
+                },
+              }
+            : {},
+        },
+      );
+
+      setDuplicando(false);
+      setNovaData('');
+
+      aoAvisar({
+        tom: 'sucesso',
+        texto: novaData
+          ? `Publicação duplicada para ${resultado.scheduled} destino(s) na nova data.`
+          : 'Publicação duplicada como rascunho. Agende quando quiser.',
+      });
+
+      aoMudar();
+    } catch (caught) {
+      aoAvisar({
+        tom: 'erro',
+        texto:
+          caught instanceof ApiError ? caught.message : 'Não foi possível duplicar a publicação.',
+      });
+    } finally {
+      setProcessando(false);
+    }
+  }
 
   async function executar(acao: 'retry' | 'cancel') {
     setProcessando(true);
@@ -279,11 +336,49 @@ function CartaoPublicacao({
               Cancelar pendentes
             </Botao>
           )}
+          {podeDuplicar && (
+            <Botao variante="secundaria" onClick={() => setDuplicando(true)}>
+              Duplicar
+            </Botao>
+          )}
           <Botao variante="fantasma" onClick={() => setExpandido((atual) => !atual)}>
             {expandido ? 'Ocultar' : 'Ver destinos'}
           </Botao>
         </div>
       </header>
+
+      <Modal
+        aberto={duplicando}
+        aoFechar={() => setDuplicando(false)}
+        titulo="Duplicar publicação"
+        largura="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-suave">
+            Cria uma publicação nova com uma cópia do conteúdo, nas mesmas{' '}
+            {publicacao.counts.total} conta(s) desta. Editar a cópia não altera o texto da
+            original. Se algum grupo mudou depois, a cópia continua com as contas de agora —
+            a composição nova só entra se você escolher os destinos no compositor.
+          </p>
+
+          <Campo
+            rotulo="Nova data e hora"
+            type="datetime-local"
+            value={novaData}
+            onChange={(evento) => setNovaData(evento.target.value)}
+            dica="Horário local de cada conta de destino. Em branco, a cópia fica como rascunho."
+          />
+
+          <div className="flex justify-end gap-2">
+            <Botao variante="fantasma" onClick={() => setDuplicando(false)}>
+              Cancelar
+            </Botao>
+            <Botao variante="primaria" carregando={processando} onClick={() => void duplicar()}>
+              Duplicar
+            </Botao>
+          </div>
+        </div>
+      </Modal>
 
       {expandido && (
         <div className="p-4">
