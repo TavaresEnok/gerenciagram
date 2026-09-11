@@ -224,6 +224,8 @@ export class PostService {
       /** Agenda os destinos válidos e ignora os bloqueados. */
       allowPartial?: boolean;
       idempotencyKey?: string;
+      /** Preenchido só por `duplicate()`, para manter a origem rastreável. */
+      duplicatedFromId?: string;
     },
     correlationId: string,
   ): Promise<{ postId: string; preview: PreviewResult; scheduled: number; skipped: number }> {
@@ -293,6 +295,7 @@ export class PostService {
           sourceGroupIds: input.selection.groupIds ?? [],
           groupSnapshotTakenAt: input.selection.groupIds?.length ? new Date() : null,
           idempotencyKey: input.idempotencyKey ?? null,
+          duplicatedFromId: input.duplicatedFromId ?? null,
         },
       });
 
@@ -342,6 +345,163 @@ export class PostService {
       scheduled: schedulable.length,
       skipped: blocked.length,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  //  Reaproveitamento de conteúdo (SPEC seção 6)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Duplica uma publicação para outra data e/ou outras contas.
+   *
+   * Três decisões que valem a explicação:
+   *
+   *  1. **Os destinos vêm dos `PostTarget` da origem, não dos `sourceGroupIds`.**
+   *     Reexpandir o grupo faria a cópia herdar contas que entraram no grupo
+   *     depois — exatamente a alteração silenciosa que a SPEC seção 6.1
+   *     proíbe. Quem quiser a composição nova passa a seleção explicitamente.
+   *
+   *  2. **O conteúdo é COPIADO por padrão.** Se a cópia apontasse para o mesmo
+   *     `Content`, editar a legenda da republicação reescreveria o texto do
+   *     post original — inclusive de um que já saiu no ar. Com
+   *     `reuseContent: true` o chamador aceita conscientemente o vínculo.
+   *
+   *  3. **A validação não é pulada.** A cópia passa pelo mesmo `preview`, e
+   *     portanto pela mesma checagem de conteúdo duplicado: duplicar um post
+   *     do X para uma segunda conta do X continua sendo bloqueado, porque a
+   *     política de automação do X proíbe isso.
+   */
+  async duplicate(
+    auth: AuthContext,
+    sourcePostId: string,
+    input: {
+      selection?: TargetSelection;
+      schedule?: SchedulePlan;
+      campaignId?: string;
+      /** Aponta para o mesmo Content em vez de copiá-lo. */
+      reuseContent?: boolean;
+      allowPartial?: boolean;
+    },
+    correlationId: string,
+  ): Promise<{
+    postId: string;
+    contentId: string;
+    duplicatedFromId: string;
+    preview: PreviewResult;
+    scheduled: number;
+    skipped: number;
+  }> {
+    const source = await this.loadPost(auth, sourcePostId);
+
+    const selection: TargetSelection =
+      input.selection?.accountIds?.length || input.selection?.groupIds?.length
+        ? input.selection
+        : { accountIds: source.targets.map((target) => target.socialAccountId) };
+
+    if (!selection.accountIds?.length && !selection.groupIds?.length) {
+      throw new ValidationError(
+        'A publicação de origem não tem destinos para reaproveitar. Escolha as contas ' +
+          'de destino explicitamente.',
+      );
+    }
+
+    const contentId = input.reuseContent
+      ? source.contentId
+      : await this.copyContent(auth, source.contentId);
+
+    const created = await this.create(
+      auth,
+      {
+        contentId,
+        selection,
+        ...(input.schedule ? { schedule: input.schedule } : {}),
+        ...(input.campaignId ? { campaignId: input.campaignId } : {}),
+        ...(input.allowPartial !== undefined ? { allowPartial: input.allowPartial } : {}),
+        duplicatedFromId: source.id,
+      },
+      correlationId,
+    );
+
+    await recordAudit(this.container.prisma, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'post.duplicate',
+      entityType: 'Post',
+      entityId: created.postId,
+      changes: {
+        origem: source.id,
+        conteudo: input.reuseContent ? 'reaproveitado' : 'copiado',
+        destinos: created.scheduled,
+      },
+      correlationId,
+    });
+
+    return { ...created, contentId, duplicatedFromId: source.id };
+  }
+
+  /**
+   * Copia um conteúdo com suas mídias e variações.
+   *
+   * As mídias são reaproveitadas por referência — o mesmo `MediaAsset`, não um
+   * novo arquivo no storage. O arquivo é imutável depois do upload, então
+   * duplicá-lo só gastaria espaço.
+   *
+   * `aiReviewedAt` é mantido: a cópia nasce com texto idêntico ao que um
+   * humano já revisou. Qualquer edição posterior passa pelo mesmo caminho de
+   * revisão do conteúdo original.
+   */
+  private async copyContent(auth: AuthContext, contentId: string): Promise<string> {
+    const original = await this.container.prisma.content.findFirst({
+      where: { id: contentId, organizationId: auth.organizationId, deletedAt: null },
+      include: { media: true, variants: true },
+    });
+
+    if (!original) throw new NotFoundError('Conteúdo', contentId);
+
+    return this.container.prisma.$transaction(async (tx) => {
+      const copy = await tx.content.create({
+        data: {
+          organizationId: original.organizationId,
+          clientId: original.clientId,
+          campaignId: original.campaignId,
+          // Autor da CÓPIA é quem duplicou, não quem escreveu o original.
+          createdById: auth.userId,
+          title: original.title,
+          body: original.body,
+          hashtags: original.hashtags,
+          aiGenerated: original.aiGenerated,
+          aiReviewedAt: original.aiReviewedAt,
+        },
+      });
+
+      if (original.media.length > 0) {
+        await tx.contentMedia.createMany({
+          data: original.media.map((link) => ({
+            contentId: copy.id,
+            mediaAssetId: link.mediaAssetId,
+            position: link.position,
+            role: link.role,
+          })),
+        });
+      }
+
+      if (original.variants.length > 0) {
+        await tx.contentVariant.createMany({
+          data: original.variants.map((variant) => ({
+            contentId: copy.id,
+            organizationId: variant.organizationId,
+            platform: variant.platform,
+            socialAccountId: variant.socialAccountId,
+            title: variant.title,
+            body: variant.body,
+            hashtags: variant.hashtags,
+            platformFields: variant.platformFields ?? undefined,
+          })),
+        });
+      }
+
+      return copy.id;
+    });
   }
 
   /** Agenda (ou reagenda) uma publicação já criada. */

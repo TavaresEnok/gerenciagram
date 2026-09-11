@@ -6,6 +6,7 @@ import {
   type AppCredentials,
   type PlatformKey,
   type PublishResult,
+  type RemoteComment,
   type SocialMediaAdapter,
 } from '@app/core';
 import { PrismaClient } from '@app/db';
@@ -28,6 +29,10 @@ export interface FakePublisherBehavior {
   responses: Array<PublishResult | Error>;
   /** Chamadas efetivamente feitas — o contador de publicação duplicada. */
   calls: Array<{ idempotencyKey: string; title?: string | undefined; body: string }>;
+  /** Comentários que a rede devolve, por id remoto da publicação. */
+  comments: Map<string, RemoteComment[] | Error>;
+  /** Publicações cujos comentários foram buscados, na ordem. */
+  commentCalls: string[];
 }
 
 export function createFakeAdapter(
@@ -65,6 +70,16 @@ export function createFakeAdapter(
       deletePost: async () => undefined,
       fetchDynamicFieldOptions: async () => [],
     },
+    inbox: {
+      async fetchComments(_credentials, remotePostId) {
+        behavior.commentCalls.push(remotePostId);
+
+        const resposta = behavior.comments.get(remotePostId) ?? [];
+        if (resposta instanceof Error) throw resposta;
+        return resposta;
+      },
+      replyToComment: notImplemented as never,
+    },
   };
 }
 
@@ -81,7 +96,12 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
     log: ['warn', 'error'],
   });
 
-  const behavior: FakePublisherBehavior = { responses: [], calls: [] };
+  const behavior: FakePublisherBehavior = {
+    responses: [],
+    calls: [],
+    comments: new Map(),
+    commentCalls: [],
+  };
   const adapter = createFakeAdapter(platform, behavior);
 
   const adapters: AdapterRegistry = {
@@ -172,7 +192,7 @@ async function resetDatabase(prisma: PrismaClient): Promise<void> {
       account_groups, posting_schedules, oauth_tokens, social_accounts,
       clients, memberships, sessions, users, organizations,
       platform_quota_usage, analytics_snapshots, dead_letter_jobs,
-      notifications, audit_logs
+      notifications, audit_logs, comments
     RESTART IDENTITY CASCADE
   `);
 

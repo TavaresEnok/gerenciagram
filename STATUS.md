@@ -178,6 +178,41 @@ Cenários da seção 21 cobertos por teste automatizado:
 | Post para conta com fuso diferente do usuário | `scheduling.test.ts` |
 | Horário de verão (ida e volta preserva a hora de parede) | `scheduling.test.ts` |
 | Conta sem grade de fila não derruba as outras do grupo | `scheduling.test.ts` |
+| Ressincronizar a inbox não duplica nem desmarca o que já foi lido | `inbox.test.ts` |
+| Falha num post não impede a inbox dos outros | `inbox.test.ts` |
+| Duplicar publicação não compartilha o conteúdo com a original | `duplicate.test.ts` |
+| Duplicar NÃO reexpande o grupo (mudança de grupo não vaza) | `duplicate.test.ts` |
+| Alerta não dispara com amostra pequena (1 falha em 1 = 100%) | `alerts.test.ts` |
+
+---
+
+## O que foi fechado depois dos adapters
+
+**Reaproveitamento de conteúdo.** `POST /v1/posts/:postId/duplicate` cria uma
+publicação nova ligada à original por `duplicatedFromId`. Por padrão COPIA o
+conteúdo — se apontasse para o mesmo `Content`, editar a republicação
+reescreveria o texto de um post que já saiu no ar — e reaproveita exatamente
+as contas de destino da origem, sem reexpandir o grupo (reexpandir faria a
+cópia herdar contas que entraram depois, que é a alteração silenciosa que a
+SPEC seção 6.1 proíbe). A cópia passa pela mesma validação: duplicar para uma
+segunda conta do X continua bloqueado.
+
+**Sincronização da inbox.** Um job varre, a cada 15 min, as contas ativas de
+redes que oferecem comentários por API oficial e enfileira uma rodada por
+conta (`jobId` determinístico, para duas réplicas não sincronizarem a mesma
+conta em paralelo). Cada rodada busca os comentários das publicações dos
+últimos 14 dias, com teto de 50 posts — varrer o histórico inteiro queimaria
+cota sem trazer nada novo. A gravação é idempotente pela UNIQUE
+`(conta, id remoto)`, e a ressincronização não toca em `isRead`/`isReplied`:
+o estado de leitura é nosso, não da plataforma.
+
+**Alertas operacionais.** Um job avalia a cada 5 min as mesmas métricas do
+painel admin contra limiares configuráveis (`ALERT_*` no `.env.example`) e
+dispara: circuito aberto, taxa de falha por plataforma, dead-letter acumulada,
+fila crescendo e contas pedindo reconexão. Todo alerta vai para o log em nível
+de erro; o e-mail só sai se `ALERT_EMAIL` estiver preenchido. O silêncio
+pós-disparo é guardado no Redis com `SET NX EX`, que é atômico — com duas
+réplicas avaliando ao mesmo tempo, só uma manda o e-mail.
 
 ---
 
@@ -189,15 +224,11 @@ Cenários da seção 21 cobertos por teste automatizado:
 job processado em poucos minutos do horário) estão documentados mas não foram
 medidos sob carga.
 
-**Inbox sem sincronização automática.** O endpoint de leitura e resposta
-existe; falta o job periódico que busca comentários novos.
-
-**Reaproveitamento de conteúdo.** `Post.duplicatedFromId` existe no modelo; a
-ação de duplicar para outra data/rede não tem endpoint.
-
-**Alertas.** As métricas técnicas existem no painel admin (tamanho de fila,
-taxa de falha por plataforma, circuitos, dead-letter). Falta ligá-las a um
-sistema de alerta — o `SENTRY_DSN` está previsto no `.env`.
+**Sentry.** Os alertas operacionais já rodam (job a cada 5 min, ver abaixo) e
+saem no log em nível de erro, que é o canal que qualquer coletor capta sem
+acoplar o worker a um fornecedor. Ligar o SDK do Sentry propriamente dito —
+com stack trace e agrupamento de exceção — continua pendente; o `SENTRY_DSN`
+está previsto no `.env` e hoje não é lido por ninguém.
 
 **Aviso de depreciação do Fastify.** `disableRequestLogging` sai no Fastify 6,
 substituída por `logController` — que exige implementar um contrato de 10

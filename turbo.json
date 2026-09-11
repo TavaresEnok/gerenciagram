@@ -18,6 +18,10 @@
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]
     },
+    "@app/api#test": {
+      "dependsOn": ["^build", "@app/worker#test"],
+      "outputs": ["coverage/**"]
+    },
     "test:watch": {
       "cache": false,
       "persistent": true

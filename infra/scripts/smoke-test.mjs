@@ -222,6 +222,18 @@ async function main() {
     ? ok('agendar sem destino é recusado')
     : falhou('agendamento sem destino deveria falhar', String(semDestino.status));
 
+  // Reaproveitamento de conteúdo: aqui só dá para confirmar que a rota está
+  // montada e escopada à organização — sem conta conectada não há publicação
+  // real para duplicar. O comportamento da duplicação em si está coberto por
+  // teste automatizado (apps/api/src/modules/posts/duplicate.test.ts).
+  const duplicarInexistente = await chamar(
+    '/v1/posts/00000000-0000-4000-8000-000000000000/duplicate',
+    { body: {} },
+  );
+  duplicarInexistente.status === 404
+    ? ok('duplicar publicação inexistente responde 404')
+    : falhou('duplicar inexistente deveria dar 404', String(duplicarInexistente.status));
+
   // --- Idempotência --------------------------------------------------------
   console.log('\nOutros módulos');
   for (const [rotulo, caminho] of [

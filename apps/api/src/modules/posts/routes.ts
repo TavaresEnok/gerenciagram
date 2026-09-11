@@ -199,6 +199,56 @@ export async function registerPostRoutes(
   );
 
   app.post(
+    '/posts/:postId/duplicate',
+    {
+      preHandler: app.requirePermission('post:create'),
+      schema: {
+        tags: ['Publicações'],
+        summary: 'Reaproveita uma publicação em outra data e/ou outras contas',
+        description:
+          'Cria uma publicação nova ligada à original por `duplicatedFromId`. Por padrão ' +
+          'copia o conteúdo (para que editar a cópia não reescreva o texto do post ' +
+          'original) e reaproveita exatamente as contas de destino da origem — não ' +
+          'reexpande os grupos, porque isso faria a cópia herdar contas que entraram no ' +
+          'grupo depois. A cópia passa pela MESMA validação: duplicar para uma segunda ' +
+          'conta do X continua bloqueado pela política de automação daquela rede.',
+        params: z.object({ postId: z.string().uuid() }),
+        body: z
+          .object({
+            selection: selectionSchema.optional(),
+            schedule: scheduleSchema.optional(),
+            campaignId: z.string().uuid().optional(),
+            /** Aponta para o mesmo conteúdo em vez de copiá-lo. */
+            reuseContent: z.boolean().default(false),
+            allowPartial: z.boolean().default(false),
+          })
+          .optional()
+          .default({ reuseContent: false, allowPartial: false }),
+        response: {
+          201: z.object({
+            postId: z.string(),
+            contentId: z.string(),
+            duplicatedFromId: z.string(),
+            scheduled: z.number(),
+            skipped: z.number(),
+            preview: previewSchema,
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await service.duplicate(
+        requireAuth(request),
+        request.params.postId,
+        request.body ?? {},
+        request.correlationId,
+      );
+
+      return reply.status(201).send(result);
+    },
+  );
+
+  app.post(
     '/posts/:postId/schedule',
     {
       preHandler: app.requirePermission('post:schedule'),

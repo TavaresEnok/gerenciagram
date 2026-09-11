@@ -7,13 +7,17 @@ import {
   JOB_PUBLISH_TARGET,
   JOB_REFRESH_TOKEN,
   JOB_SCAN_EXPIRING_TOKENS,
+  JOB_SYNC_INBOX,
   QUEUE_NAMES,
   type RefreshTokenPayload,
+  type SyncInboxPayload,
 } from '@app/core';
 import { Queue, Worker, type Job } from 'bullmq';
 import { closeWorkerContainer, createWorkerContainer, type WorkerContainer } from './container.js';
 import { recordDeadLetter } from './lib/dead-letter.js';
+import { createRedisCooldownStore, processEvaluateAlerts } from './processors/alerts.js';
 import { processCollectMetrics } from './processors/analytics.js';
+import { processSyncInbox, scanAccountsForInboxSync } from './processors/inbox.js';
 import { applyRetention, processDataDeletion, reconcileOrphanTargets } from './processors/maintenance.js';
 import { processMedia } from './processors/media.js';
 import { processPublishTarget } from './processors/publish.js';
@@ -21,6 +25,19 @@ import { processGenerateReport } from './processors/reports.js';
 import { processTokenRefresh, scanExpiringTokens } from './processors/tokens.js';
 
 const JOB_RECONCILE_ORPHANS = 'maintenance:reconcile-orphans';
+
+/**
+ * Dispara uma rodada de sincronização da inbox: este job não busca nada, só
+ * enfileira um `sync-inbox` por conta ativa. Separar o agendador do trabalho
+ * é o que mantém cada conta como unidade independente de falha e de retry.
+ */
+const JOB_SCAN_INBOX = 'inbox:scan-accounts';
+
+/**
+ * Avalia as métricas técnicas contra os limiares e dispara os alertas. O
+ * painel admin é PULL — só avisa quem está olhando; este job é o PUSH.
+ */
+const JOB_EVALUATE_ALERTS = 'maintenance:evaluate-alerts';
 
 /**
  * Processo de workers.
@@ -152,6 +169,40 @@ async function main(): Promise<void> {
     3,
   );
 
+  // --- Inbox ---------------------------------------------------------------
+  const inboxQueue = new Queue(QUEUE_NAMES.inboxSync, {
+    connection: { url: env.REDIS_URL, maxRetriesPerRequest: null },
+    prefix: env.QUEUE_PREFIX,
+  });
+  queues.push(inboxQueue);
+
+  makeWorker(
+    QUEUE_NAMES.inboxSync,
+    async (job: Job) => {
+      if (job.name === JOB_SCAN_INBOX) {
+        const contas = await scanAccountsForInboxSync(
+          container,
+          async (payload: SyncInboxPayload, jobId: string) => {
+            await inboxQueue.add(JOB_SYNC_INBOX, payload, {
+              jobId,
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 60_000 },
+              // Sem a remoção, o `jobId` fixo da rodada anterior ainda existe
+              // na fila e a próxima seria descartada como duplicada.
+              removeOnComplete: true,
+              removeOnFail: true,
+            });
+          },
+        );
+        logger.debug({ contas }, 'rodada de sincronização da inbox enfileirada');
+        return;
+      }
+
+      await processSyncInbox(container, job as never);
+    },
+    3,
+  );
+
   // --- Relatórios ----------------------------------------------------------
   makeWorker(
     QUEUE_NAMES.reports,
@@ -173,6 +224,12 @@ async function main(): Promise<void> {
       }
       if (job.name === JOB_RECONCILE_ORPHANS) {
         await reconcileOrphanTargets(container, publishQueue);
+        return;
+      }
+      if (job.name === JOB_EVALUATE_ALERTS) {
+        // `queues` são as mesmas instâncias que o worker usa: a profundidade
+        // medida é a real, não uma reconstrução.
+        await processEvaluateAlerts(container, queues, createRedisCooldownStore(container));
         return;
       }
       logger.warn({ jobName: job.name }, 'job de manutenção desconhecido');
@@ -206,6 +263,31 @@ async function main(): Promise<void> {
       // 3h da manhã, quando o volume de publicação é menor.
       repeat: { pattern: '0 3 * * *' },
       jobId: 'repeat:apply-retention',
+      removeOnComplete: true,
+    },
+  );
+
+  await inboxQueue.add(
+    JOB_SCAN_INBOX,
+    { correlationId: 'inbox-scan' },
+    {
+      // A cada 15 min. Comentário novo aparece na inbox em minutos, e o
+      // intervalo mantém o consumo de cota previsível: uma varredura por
+      // conta a cada quarto de hora.
+      repeat: { pattern: '*/15 * * * *' },
+      jobId: 'repeat:scan-inbox',
+      removeOnComplete: true,
+    },
+  );
+
+  await maintenanceQueue.add(
+    JOB_EVALUATE_ALERTS,
+    { correlationId: 'evaluate-alerts' },
+    {
+      // A cada 5 min. O silêncio pós-disparo (ALERT_COOLDOWN_MINUTES) é o que
+      // impede que um problema persistente vire um e-mail a cada rodada.
+      repeat: { pattern: '*/5 * * * *' },
+      jobId: 'repeat:evaluate-alerts',
       removeOnComplete: true,
     },
   );

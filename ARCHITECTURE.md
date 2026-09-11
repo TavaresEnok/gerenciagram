@@ -289,3 +289,45 @@ mais confiável do que depender de alguém lembrar em cada chamada de log.
 
 `PublishAttempt` guarda **cada tentativa**, nunca sobrescrita: é o que permite
 auditar por que um destino falhou 4 vezes antes de dar certo.
+
+### Jobs periódicos
+
+Além do job por destino, o worker registra agendadores com `jobId` fixo — o id
+fixo impede que subir uma segunda réplica registre um segundo agendador para o
+mesmo trabalho.
+
+| Job | Intervalo | O que faz |
+|---|---|---|
+| `scan-expiring-tokens` | 30 min | Enfileira renovação dos tokens perto de expirar |
+| `inbox:scan-accounts` | 15 min | Enfileira uma sincronização de inbox por conta ativa |
+| `maintenance:evaluate-alerts` | 5 min | Compara as métricas técnicas com os limiares e dispara |
+| `maintenance:reconcile-orphans` | 2 min | Reenfileira destinos agendados que ficaram sem job |
+| `apply-retention` | 3h da manhã | Aplica a retenção da LGPD |
+
+Os que abrem trabalho por conta (inbox, tokens) **separam o agendador do
+trabalho**: o job periódico só enfileira, e quem executa é um job por conta.
+É o que mantém cada conta como unidade independente de falha e de retry —
+uma conta com token quebrado não impede a sincronização das outras 19.
+
+### Alertas
+
+O painel admin é **pull**: só avisa quem está olhando. `evaluate-alerts` é o
+**push** — lê as mesmas métricas (circuitos, taxa de falha por plataforma,
+dead-letter, profundidade de fila, contas pedindo reconexão) e dispara quando
+passam dos limiares do `.env`.
+
+Três decisões que evitam o alerta que ninguém lê:
+
+- **Nenhum limiar no código.** Todos vêm do ambiente (`ALERT_*`), porque o que
+  é ruído numa agência de 5 contas é emergência numa de 500.
+- **Amostra mínima na taxa de falha.** Uma falha em uma tentativa é 100% e não
+  significa nada; sem o piso, a primeira publicação com erro de uma rede nova
+  acordaria a operação.
+- **Silêncio pós-disparo no Redis, com `SET NX EX`.** É atômico: com duas
+  réplicas avaliando ao mesmo tempo, só uma manda o e-mail. Em memória, sairia
+  um e-mail por réplica a cada 5 minutos.
+
+O canal que sempre existe é o **log em nível de erro** — é o que qualquer
+coletor (Sentry, Loki, CloudWatch) capta sem acoplar o worker a um fornecedor.
+O e-mail é adicional e só sai se `ALERT_EMAIL` estiver preenchido: sem
+destinatário configurado, o sistema não inventa um.

@@ -55,6 +55,21 @@ const schema = z.object({
   PUBLISH_CONCURRENCY: z.coerce.number().int().positive().default(5),
   MEDIA_CONCURRENCY: z.coerce.number().int().positive().default(2),
 
+  // --- Alertas operacionais (SPEC seção 13) --------------------------------
+  // Limiares configuráveis, nunca fixos no código. Os padrões abaixo são
+  // ponto de partida: cada operação calibra com o próprio volume.
+  /** Destinatário dos e-mails de alerta. Vazio = alerta só no log. */
+  ALERT_EMAIL: z.string().optional(),
+  /** Taxa de falha por plataforma (%) na janela de 24h. */
+  ALERT_FAILURE_RATE_PERCENT: z.coerce.number().min(1).max(100).default(25),
+  /** Publicações mínimas na janela para a taxa valer (1 de 1 é 100% e não diz nada). */
+  ALERT_FAILURE_MIN_SAMPLE: z.coerce.number().int().min(1).default(10),
+  ALERT_DEAD_LETTER_OPEN: z.coerce.number().int().min(1).default(10),
+  ALERT_QUEUE_WAITING: z.coerce.number().int().min(1).default(500),
+  ALERT_ACCOUNTS_NEEDING_RECONNECT: z.coerce.number().int().min(1).default(5),
+  /** Silêncio do mesmo alerta depois de disparar, em minutos. */
+  ALERT_COOLDOWN_MINUTES: z.coerce.number().int().min(1).default(60),
+
   YOUTUBE_CLIENT_ID: z.string().optional(),
   YOUTUBE_CLIENT_SECRET: z.string().optional(),
   META_APP_ID: z.string().optional(),

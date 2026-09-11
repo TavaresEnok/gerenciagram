@@ -163,8 +163,35 @@ POST /v1/posts                        cria e agenda (Idempotency-Key)
 POST /v1/posts/:id/schedule           reagenda
 POST /v1/posts/:id/retry              reprocessa SÓ os destinos que falharam
 POST /v1/posts/:id/cancel             cancela destinos pendentes
+POST /v1/posts/:id/duplicate          reaproveita em outra data e/ou contas
 GET  /v1/posts                        calendário e fila (filtra por grupo/conta)
 GET  /v1/posts/:id                    detalhe com o estado de cada destino
+```
+
+`duplicate` cria uma publicação nova ligada à original por `duplicatedFromId`.
+Dois padrões que valem conhecer antes de mudar:
+
+- **O conteúdo é copiado**, não referenciado. Se a cópia apontasse para o mesmo
+  `Content`, editar a legenda da republicação reescreveria o texto do post
+  original — inclusive de um que já saiu no ar. `reuseContent: true` aceita o
+  vínculo conscientemente.
+- **Os destinos vêm dos destinos da origem**, não de uma reexpansão dos grupos.
+  Reexpandir faria a cópia herdar contas que entraram no grupo depois, que é a
+  alteração silenciosa proibida pela SPEC seção 6.1. Para a composição nova,
+  mande `selection` explicitamente.
+
+A cópia passa pela MESMA validação do agendamento normal: duplicar um post do
+X para uma segunda conta do X continua bloqueado pela política de automação
+daquela rede.
+
+```jsonc
+POST /v1/posts/:id/duplicate
+{
+  "selection": { "accountIds": ["..."] },     // opcional; padrão = destinos da origem
+  "schedule": { "mode": "SPECIFIC_TIME", "localDateTime": "2026-10-02T10:00" },
+  "reuseContent": false,
+  "allowPartial": false
+}
 ```
 
 ```http
