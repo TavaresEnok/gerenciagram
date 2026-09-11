@@ -241,9 +241,17 @@ está previsto no `.env` e hoje não é lido por ninguém.
 substituída por `logController` — que exige implementar um contrato de 10
 métodos, não só trocar o nome. Fica para o upgrade; até lá a opção funciona.
 
-**Teste de restauração de backup.** O procedimento está documentado em
-`DEPLOYMENT.md` e nunca foi executado neste ambiente. Backup não restaurado não
-é backup confiável.
+**Teste de restauração de backup — executado em 2026-09-11.** Dump, restauração
+em banco novo e verificação, com o registro em `DEPLOYMENT.md`. Passou: além
+das contagens, os 37 PKs, 63 FKs e 133 índices vieram sem divergência, e a
+UNIQUE de cota rejeitou uma inserção duplicada — o que prova que está ativa, e
+não só presente no catálogo.
+
+O teste melhorou o próprio procedimento: a versão anterior conferia só
+contagem de linhas, que não detectaria a perda de uma UNIQUE. Ficou
+documentado também que o `ENCRYPTION_KEY` correspondente faz parte da
+recuperação: restaurar o banco com outra chave devolve um sistema que sobe e
+falha em toda publicação.
 
 ---
 

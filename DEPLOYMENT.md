@@ -238,11 +238,38 @@ docker exec gerenciador_postgres psql -U gerenciador -d postgres \
 docker exec -i gerenciador_postgres pg_restore -U gerenciador \
   -d restauracao_teste --no-owner < backup.dump
 
-# Conferir que os dados vieram:
+# 1. Os dados vieram?
 docker exec gerenciador_postgres psql -U gerenciador -d restauracao_teste \
   -c "SELECT (SELECT count(*) FROM organizations) AS orgs,
              (SELECT count(*) FROM post_targets) AS destinos,
              (SELECT count(*) FROM social_accounts) AS contas;"
+
+# 2. As CONSTRAINTS vieram? Contar linhas não basta: um banco restaurado sem
+#    as UNIQUE aceita publicação duplicada em silêncio, que é exatamente o
+#    que o sistema inteiro foi desenhado para impedir.
+docker exec gerenciador_postgres psql -U gerenciador -d restauracao_teste \
+  -c "SELECT contype, count(*) FROM pg_constraint c
+        JOIN pg_namespace n ON n.oid = c.connamespace
+       WHERE n.nspname = 'public' GROUP BY contype ORDER BY contype;"
+
+docker exec gerenciador_postgres psql -U gerenciador -d restauracao_teste \
+  -c "SELECT indexname FROM pg_indexes
+       WHERE schemaname = 'public' AND indexdef LIKE 'CREATE UNIQUE%'
+       ORDER BY 1;"
+
+# 3. As constraints estão sendo APLICADAS? Presente no catálogo e ativa são
+#    coisas diferentes. Esta inserção tem de falhar na segunda linha.
+docker exec gerenciador_postgres psql -U gerenciador -d restauracao_teste -c "
+  INSERT INTO platform_quota_usage
+    (id, platform, \"scopeKey\", \"windowDate\", \"windowStart\", \"windowEnd\",
+     count, units, \"createdAt\", \"updatedAt\")
+  VALUES (gen_random_uuid(), 'YOUTUBE', 'APP', CURRENT_DATE, now(),
+          now() + interval '1 day', 1, 1, now(), now());
+  INSERT INTO platform_quota_usage
+    (id, platform, \"scopeKey\", \"windowDate\", \"windowStart\", \"windowEnd\",
+     count, units, \"createdAt\", \"updatedAt\")
+  VALUES (gen_random_uuid(), 'YOUTUBE', 'APP', CURRENT_DATE, now(),
+          now() + interval '1 day', 1, 1, now(), now());"
 
 docker exec gerenciador_postgres psql -U gerenciador -d postgres \
   -c "DROP DATABASE restauracao_teste;"
@@ -250,6 +277,24 @@ docker exec gerenciador_postgres psql -U gerenciador -d postgres \
 
 Registre a data e o resultado de cada teste. Um teste não registrado não
 aconteceu.
+
+> **O dump não restaura sozinho.** `oauth_tokens` guarda os tokens cifrados
+> com AES-256-GCM, e a chave (`ENCRYPTION_KEY`) fica FORA do backup, no cofre
+> de segredos. Restaurar o banco com uma chave diferente devolve um sistema
+> que sobe, responde e falha em toda publicação — os tokens não decifram e
+> todas as contas precisam ser reconectadas uma a uma. A chave da versão
+> correspondente (`keyVersion`) faz parte do procedimento de recuperação tanto
+> quanto o `.dump`.
+
+### Registro dos testes de restauração
+
+| Data | Origem | Resultado |
+|---|---|---|
+| 2026-09-11 | Dump de 162 KB do `gerenciador` em dev (13 organizações, 210 contas, 10 conteúdos) | **Passou.** Contagens idênticas; 37 chaves primárias, 63 estrangeiras e 133 índices restaurados sem divergência; as UNIQUE críticas presentes (`post_targets_postId_socialAccountId_key`, `post_targets_idempotencyKey_key`, `platform_quota_usage_platform_scopeKey_windowDate_key`, `comments_socialAccountId_remoteId_key`, `oauth_tokens_socialAccountId_key`) e a de cota **rejeitou uma inserção duplicada**, provando que está ativa e não só catalogada. Banco de teste removido ao fim. |
+
+O passo 3 nasceu deste teste: a versão anterior do procedimento só conferia
+contagem de linhas, e contagem de linhas não teria detectado a perda de uma
+UNIQUE — o defeito mais caro que uma restauração pode carregar.
 
 ### Revogação em massa
 
