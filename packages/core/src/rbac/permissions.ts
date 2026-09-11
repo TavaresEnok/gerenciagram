@@ -173,6 +173,9 @@ const MANAGER: Permission[] = [
   'campaign:create',
   'campaign:update',
   'campaign:delete',
+  // 'report:read' junto de 'report:generate': gerar um relatório sem poder
+  // listá-lo nem baixá-lo deixaria o arquivo inalcançável.
+  'report:read',
   'report:generate',
   'inbox:reply',
 ];

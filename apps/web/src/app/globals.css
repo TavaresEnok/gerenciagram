@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Paleta em CSS variables. O tema escuro redefine só os tokens, então
+ * nenhuma classe do Tailwind precisa de variante `dark:` espalhada.
+ */
+:root {
+  --fundo: 250 250 250;
+  --superficie: 255 255 255;
+  --borda: 228 228 231;
+  --texto: 24 24 27;
+  --suave: 113 113 122;
+  --primaria: 24 24 27;
+  --primaria-texto: 255 255 255;
+  --sucesso: 22 163 74;
+  --alerta: 202 138 4;
+  --erro: 220 38 38;
+
+  color-scheme: light;
+}
+
+:root[data-tema='escuro'] {
+  --fundo: 9 9 11;
+  --superficie: 24 24 27;
+  --borda: 39 39 42;
+  --texto: 250 250 250;
+  --suave: 161 161 170;
+  --primaria: 250 250 250;
+  --primaria-texto: 24 24 27;
+  --sucesso: 34 197 94;
+  --alerta: 250 204 21;
+  --erro: 248 113 113;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-tema='claro']) {
+    --fundo: 9 9 11;
+    --superficie: 24 24 27;
+    --borda: 39 39 42;
+    --texto: 250 250 250;
+    --suave: 161 161 170;
+    --primaria: 250 250 250;
+    --primaria-texto: 24 24 27;
+    --sucesso: 34 197 94;
+    --alerta: 250 204 21;
+    --erro: 248 113 113;
+
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-fundo text-texto antialiased;
+  }
+
+  /* Foco visível sempre: navegação por teclado é requisito de acessibilidade,
+     não preferência. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primaria ring-offset-2 ring-offset-fundo;
+  }
+}
+
+@layer components {
+  .cartao {
+    @apply rounded-xl border border-borda bg-superficie;
+  }
+
+  .rotulo {
+    @apply block text-sm font-medium text-texto;
+  }
+
+  .campo {
+    @apply w-full rounded-lg border border-borda bg-superficie px-3 py-2 text-sm
+           text-texto placeholder:text-suave
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .tabela {
+    @apply w-full text-left text-sm;
+  }
+
+  .tabela th {
+    @apply border-b border-borda px-3 py-2 font-medium text-suave;
+  }
+
+  .tabela td {
+    @apply border-b border-borda px-3 py-2 align-top;
+  }
+}
+
+/* Conteúdo largo (tabelas, calendário) rola dentro do próprio contêiner —
+   o corpo da página nunca rola na horizontal. */
+.rolagem-horizontal {
+  @apply overflow-x-auto;
+}

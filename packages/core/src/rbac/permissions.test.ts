@@ -36,6 +36,15 @@ describe('papéis', () => {
     expect(roleHasPermission('ANALYST', 'media:upload')).toBe(false);
   });
 
+  it('quem pode gerar relatório também pode lê-lo', () => {
+    // Gerar sem poder listar nem baixar deixaria o arquivo inalcançável.
+    for (const role of ['MANAGER', 'ADMIN', 'OWNER', 'ANALYST'] as const) {
+      if (roleHasPermission(role, 'report:generate')) {
+        expect(roleHasPermission(role, 'report:read')).toBe(true);
+      }
+    }
+  });
+
   it('Viewer não escreve nada', () => {
     const viewer = permissionsForRole('VIEWER');
     for (const permission of viewer) {
