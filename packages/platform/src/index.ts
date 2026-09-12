@@ -12,6 +12,7 @@ export * from './registry.js';
 export * from './tokens.js';
 export * from './quota.js';
 export * from './circuit.js';
+export * from './error-reporter.js';
 
 export { createYouTubeAdapter, queryUploadOffset } from './adapters/youtube/index.js';
 export { createFacebookAdapter, createInstagramAdapter } from './adapters/meta/index.js';

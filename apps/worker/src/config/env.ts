@@ -84,6 +84,8 @@ const schema = z.object({
   // ponto de partida: cada operação calibra com o próprio volume.
   /** Destinatário dos e-mails de alerta. Vazio = alerta só no log. */
   ALERT_EMAIL: z.string().optional(),
+  /** Coletor de erros. Vazio = relator desligado; o log continua valendo. */
+  SENTRY_DSN: z.string().optional(),
   /** Taxa de falha por plataforma (%) na janela de 24h. */
   ALERT_FAILURE_RATE_PERCENT: z.coerce.number().min(1).max(100).default(25),
   /** Publicações mínimas na janela para a taxa valer (1 de 1 é 100% e não diz nada). */

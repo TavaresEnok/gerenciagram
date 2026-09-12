@@ -7,7 +7,9 @@ import {
   createPlatformServices,
   type CircuitGuard,
   type EncryptionKeyring,
+  type ErrorReporter,
   type PlatformServices,
+  createErrorReporter,
 } from '@app/platform';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -35,6 +37,8 @@ export interface Container {
   queues: Queues;
   platforms: PlatformServices;
   circuit: CircuitGuard;
+  /** Relato de erro inesperado ao Sentry; no-op sem SENTRY_DSN. */
+  errors: ErrorReporter;
   /** Atalho para `platforms.adapters`. */
   adapters: AdapterRegistry;
   /** Plataformas com credenciais de app preenchidas NESTE ambiente. */
@@ -93,6 +97,11 @@ export function createContainer(env: Env): Container {
   const queues = createQueues(env, redis);
   const platforms = createPlatformServices(env);
   const circuit = createCircuitGuard(createCircuitStore(prisma));
+  const errors = createErrorReporter({
+    dsn: env.SENTRY_DSN,
+    environment: env.APP_ENV,
+    serviceName: env.OTEL_SERVICE_NAME,
+  });
 
   return {
     env,
@@ -105,6 +114,7 @@ export function createContainer(env: Env): Container {
     queues,
     platforms,
     circuit,
+    errors,
     adapters: platforms.adapters,
     configuredPlatforms: platforms.configuredPlatforms,
   };
@@ -141,4 +151,6 @@ export async function closeContainer(container: Container): Promise<void> {
     container.prisma.$disconnect(),
     container.redis.quit(),
   ]);
+  // Por último: um erro durante o fechamento acima ainda precisa ser enviado.
+  await container.errors.close();
 }

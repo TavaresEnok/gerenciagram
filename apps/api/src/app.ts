@@ -42,7 +42,7 @@ export async function buildApp(container: Container): Promise<AppInstance> {
   app.setSerializerCompiler(serializerCompiler);
 
   await app.register(contextPlugin);
-  await app.register(errorsPlugin);
+  await app.register(errorsPlugin, { errors: container.errors });
 
   await app.register(helmet, {
     // A API não serve HTML; a CSP restritiva atrapalharia só o Swagger UI.

@@ -6,7 +6,9 @@ import {
   createPlatformServices,
   type CircuitGuard,
   type EncryptionKeyring,
+  type ErrorReporter,
   type PlatformServices,
+  createErrorReporter,
 } from '@app/platform';
 import { Redis } from 'ioredis';
 import { pino, type Logger } from 'pino';
@@ -33,6 +35,8 @@ export interface WorkerContainer {
   keyring: EncryptionKeyring;
   platforms: PlatformServices;
   circuit: CircuitGuard;
+  /** Relato de erro ao Sentry; no-op sem SENTRY_DSN. */
+  errors: ErrorReporter;
 }
 
 export function createWorkerContainer(): WorkerContainer {
@@ -96,6 +100,11 @@ export function createWorkerContainer(): WorkerContainer {
       currentVersion: env.ENCRYPTION_KEY_VERSION,
       previousKeys: env.ENCRYPTION_KEYS_PREVIOUS,
     }),
+    errors: createErrorReporter({
+      dsn: env.SENTRY_DSN,
+      environment: env.NODE_ENV,
+      serviceName: 'gerenciador-worker',
+    }),
     platforms,
     circuit,
   };
@@ -103,4 +112,6 @@ export function createWorkerContainer(): WorkerContainer {
 
 export async function closeWorkerContainer(container: WorkerContainer): Promise<void> {
   await Promise.allSettled([container.prisma.$disconnect(), container.redis.quit()]);
+  // Por último: um erro durante o fechamento acima ainda precisa ser enviado.
+  await container.errors.close();
 }

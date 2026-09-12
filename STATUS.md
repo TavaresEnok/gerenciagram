@@ -231,11 +231,19 @@ simultâneos. É saturação, não defeito — a latência ali é `concorrência
 vazão`, e a API é stateless justamente para escalar horizontalmente. Números,
 procedimento e duas armadilhas de interpretação estão em `DEPLOYMENT.md`.
 
-**Sentry.** Os alertas operacionais já rodam (job a cada 5 min, ver abaixo) e
-saem no log em nível de erro, que é o canal que qualquer coletor capta sem
-acoplar o worker a um fornecedor. Ligar o SDK do Sentry propriamente dito —
-com stack trace e agrupamento de exceção — continua pendente; o `SENTRY_DSN`
-está previsto no `.env` e hoje não é lido por ninguém.
+**Sentry — ligado.** `@sentry/node` na API e no worker, ativado só quando
+`SENTRY_DSN` está preenchido (sem ele o relator é um no-op explícito). Vão
+para o Sentry: o erro inesperado da API (ramo 500 do plugin de erros), todo
+job que cai na dead-letter e exceção fatal de processo — esta com espera do
+envio antes de encerrar. Respostas esperadas (404, 422, erro de domínio) não
+vão.
+
+Duas escolhas conscientes, ambas documentadas em `error-reporter.ts`: **sem
+auto-instrumentação** (exigiria carregar o SDK com `node --import` antes de
+tudo, mudando o boot e as imagens só para ganhar tracing) e **sem
+`setupFastifyErrorHandler`** (a documentação não diz como ele convive com o
+`setErrorHandler` próprio da API, então a captura é explícita). O envio real
+ao Sentry não foi exercitado neste ambiente: não há DSN configurado.
 
 **Aviso de depreciação do Fastify.** `disableRequestLogging` sai no Fastify 6,
 substituída por `logController` — que exige implementar um contrato de 10

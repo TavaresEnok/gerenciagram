@@ -25,6 +25,19 @@ export async function recordDeadLetter(
   container: WorkerContainer,
   input: DeadLetterInput,
 ): Promise<void> {
+  // Job esgotado é exatamente o tipo de incidente que precisa chegar a
+  // alguém: é uma publicação (ou coleta, ou relatório) que não aconteceu.
+  // Vai para o coletor ANTES de gravar, para que uma falha do banco não
+  // apague também o relato.
+  const erro = new Error(input.failedReason);
+  if (input.stackTrace) erro.stack = input.stackTrace;
+  container.errors.capture(erro, {
+    correlationId: input.correlationId,
+    organizationId: input.organizationId,
+    tags: { queue: input.queueName, job: input.jobName },
+    extra: { jobId: input.jobId, attemptsMade: input.attemptsMade },
+  });
+
   try {
     await container.prisma.deadLetterJob.create({
       data: {

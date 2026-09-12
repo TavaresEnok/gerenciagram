@@ -49,10 +49,14 @@ async function main(): Promise<void> {
 
   process.on('unhandledRejection', (reason) => {
     container.logger.error({ err: reason }, 'promise rejeitada sem tratamento');
+    container.errors.capture(reason, { tags: { origem: 'unhandledRejection' } });
   });
   process.on('uncaughtException', (error) => {
     container.logger.fatal({ err: error }, 'exceção não capturada — encerrando');
-    process.exit(1);
+    container.errors.capture(error, { tags: { origem: 'uncaughtException' } });
+    // Sem esperar o envio, o processo morreria antes de o relato sair — e
+    // justamente o erro mais grave seria o único que nunca chega ao Sentry.
+    void container.errors.close().finally(() => process.exit(1));
   });
 
   await app.listen({ host: env.HOST, port: env.API_PORT });

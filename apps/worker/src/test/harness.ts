@@ -167,6 +167,8 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
       }),
     },
     circuit: createCircuitGuard(createCircuitStore(prisma)),
+    // Relator desligado: nenhum teste envia nada para fora.
+    errors: { enabled: false, capture: () => undefined, close: async () => undefined },
   };
 
   await resetDatabase(prisma);

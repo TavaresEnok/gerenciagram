@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "@app/core": "workspace:*",
-    "@app/db": "workspace:*"
+    "@app/db": "workspace:*",
+    "@sentry/node": "10.74.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

@@ -1,6 +1,6 @@
 import { DomainError, ValidationError } from '@app/core';
+import type { ErrorReporter } from '@app/platform';
 import { Prisma } from '@app/db';
-import type { FastifyPluginAsync } from 'fastify';
 import fp from 'fastify-plugin';
 import { ZodError } from 'zod';
 
@@ -21,7 +21,12 @@ export interface ErrorBody {
   };
 }
 
-export const errorsPlugin: FastifyPluginAsync = fp(async (app) => {
+export interface ErrorsPluginOptions {
+  /** Coletor externo. Recebe SÓ o erro inesperado — ver o ramo final. */
+  errors?: ErrorReporter;
+}
+
+export const errorsPlugin = fp<ErrorsPluginOptions>(async (app, options) => {
   app.setErrorHandler((error, request, reply) => {
     const correlationId = request.correlationId ?? '';
 
@@ -151,6 +156,14 @@ export const errorsPlugin: FastifyPluginAsync = fp(async (app) => {
 
     // --- Inesperado --------------------------------------------------------
     request.log.error({ err: error }, 'erro não tratado');
+
+    // Só este ramo vai para o Sentry. 404, 422, conflito e erro de domínio
+    // são respostas esperadas; mandá-los enterraria o incidente real em ruído.
+    options.errors?.capture(error, {
+      correlationId,
+      organizationId: request.auth?.organizationId,
+      tags: { method: request.method, route: request.routeOptions.url ?? 'desconhecida' },
+    });
 
     return reply.status(500).send(<ErrorBody>{
       error: {

@@ -363,10 +363,13 @@ async function main(): Promise<void> {
 
   process.on('unhandledRejection', (reason) => {
     logger.error({ err: reason }, 'promise rejeitada sem tratamento');
+    container.errors.capture(reason, { tags: { origem: 'unhandledRejection' } });
   });
   process.on('uncaughtException', (error) => {
     logger.fatal({ err: error }, 'exceção não capturada — encerrando');
-    process.exit(1);
+    container.errors.capture(error, { tags: { origem: 'uncaughtException' } });
+    // Espera o envio: sem isso, o erro mais grave seria o único a não chegar.
+    void container.errors.close().finally(() => process.exit(1));
   });
 
   const configured = [...container.platforms.configuredPlatforms];
