@@ -301,6 +301,7 @@ mesmo trabalho.
 | `scan-expiring-tokens` | 30 min | Enfileira renovação dos tokens perto de expirar |
 | `inbox:scan-accounts` | 15 min | Enfileira uma sincronização de inbox por conta ativa |
 | `maintenance:evaluate-alerts` | 5 min | Compara as métricas técnicas com os limiares e dispara |
+| `maintenance:recover-stuck-publishing` | 5 min | Destrava destinos presos em PUBLISHING por worker morto |
 | `maintenance:reconcile-orphans` | 2 min | Reenfileira destinos agendados que ficaram sem job |
 | `apply-retention` | 3h da manhã | Aplica a retenção da LGPD |
 

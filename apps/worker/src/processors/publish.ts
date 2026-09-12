@@ -141,7 +141,7 @@ export async function processPublishTarget(
   const ctx = adapterContext(container, correlationId, 120_000);
 
   try {
-    await publishNow(container, target, ctx, log);
+    await publishNow(container, target, ctx, log, attempt.id);
 
     await container.prisma.publishAttempt.update({
       where: { id: attempt.id },
@@ -180,6 +180,7 @@ async function publishNow(
   target: LoadedTarget,
   ctx: AdapterContext,
   log: WorkerContainer['logger'],
+  attemptId: string,
 ): Promise<void> {
   const post = target.post;
   if (!post) throw new Error('Publicação não encontrada para este destino.');
@@ -294,6 +295,21 @@ async function publishNow(
     { platform: target.platform, conta: target.socialAccount.nickname },
     'publicando na plataforma',
   );
+
+  /**
+   * Marca o instante em que a chamada externa é disparada, ANTES de disparar.
+   *
+   * É o que permite recuperar um destino travado sem arriscar publicação
+   * duplicada: se o worker morrer e este campo estiver nulo, o processo caiu
+   * antes de falar com a plataforma e o destino pode voltar para a fila com
+   * segurança. Preenchido e sem `finishedAt`, não há como saber se saiu — e aí
+   * a recuperação não re-tenta. Gravar DEPOIS da chamada inverteria a
+   * garantia e tornaria o campo inútil.
+   */
+  await container.prisma.publishAttempt.update({
+    where: { id: attemptId },
+    data: { externalCallStartedAt: new Date() },
+  });
 
   const result = await adapter.publisher.publish(credentials, input, ctx);
 

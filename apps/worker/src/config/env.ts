@@ -1,3 +1,4 @@
+import { parsePreviousKeys } from '@app/platform';
 import { z } from 'zod';
 
 /**
@@ -19,6 +20,23 @@ const envBoolean = (defaultValue: boolean) =>
         : ['1', 'true', 'yes', 'on', 'sim'].includes(value.trim().toLowerCase()),
     );
 
+const previousKeys = z
+  .string()
+  .optional()
+  .transform((value, ctx): Record<number, string> => {
+    // A interpretação vive em @app/platform: API e worker PRECISAM ler isto
+    // de forma idêntica, senão um cifra numa versão e o outro não decifra.
+    try {
+      return parsePreviousKeys(value);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    }
+  });
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
@@ -39,6 +57,12 @@ const schema = z.object({
     .refine((value) => Buffer.from(value, 'base64').length === 32, {
       message: 'precisa ser 32 bytes em base64',
     }),
+
+  // Precisam ser IDÊNTICOS aos da API: é a API que cifra o token no OAuth e o
+  // worker que o decifra para publicar. Versões diferentes nos dois processos
+  // fariam toda publicação falhar com "chave versão N não configurada".
+  ENCRYPTION_KEY_VERSION: z.coerce.number().int().min(1).default(1),
+  ENCRYPTION_KEYS_PREVIOUS: previousKeys,
 
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),

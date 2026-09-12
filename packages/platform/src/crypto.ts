@@ -15,7 +15,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEq
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // recomendado para GCM
-const CURRENT_VERSION = 1;
+
+/** Versão usada quando o ambiente não declara `ENCRYPTION_KEY_VERSION`. */
+export const DEFAULT_KEY_VERSION = 1;
 
 export interface EncryptionKeyring {
   /** version -> chave de 32 bytes */
@@ -23,15 +25,71 @@ export interface EncryptionKeyring {
   currentVersion: number;
 }
 
-export function buildKeyring(currentKeyBase64: string, previousKeys: Record<number, string> = {}): EncryptionKeyring {
+export interface KeyringOptions {
+  /**
+   * Versão da chave atual. Ao rotacionar, INCREMENTE — e mantenha a anterior
+   * em `previousKeys`.
+   */
+  currentVersion?: number;
+  /** Chaves antigas, por versão, para decifrar o que já está no banco. */
+  previousKeys?: Record<number, string>;
+}
+
+/**
+ * Monta o chaveiro.
+ *
+ * A versão da chave atual vem da CONFIGURAÇÃO, não de uma constante.
+ *
+ * Antes, `CURRENT_VERSION` era fixo em 1 e a chave nova sempre entrava nessa
+ * versão — o que tornava a rotação impossível na prática: a chave nova
+ * sobrescrevia a antiga no mesmo slot, todo texto cifrado marcado `v1`
+ * passava a falhar na verificação da tag GCM, e TODOS os tokens OAuth viravam
+ * lixo indecifrável, com cada conta precisando ser reconectada à mão. Era
+ * exatamente o desastre que o versionamento existe para evitar.
+ *
+ * Rotacionar agora é:
+ *   ENCRYPTION_KEY=<chave nova>
+ *   ENCRYPTION_KEY_VERSION=2
+ *   ENCRYPTION_KEYS_PREVIOUS={"1":"<chave antiga>"}
+ *
+ * O que já está no banco continua decifrando com a v1; o que for gravado
+ * daqui em diante nasce v2. A chave antiga só pode ser descartada quando
+ * nenhuma linha referenciar mais aquela versão.
+ */
+export function buildKeyring(
+  currentKeyBase64: string,
+  options: KeyringOptions = {},
+): EncryptionKeyring {
+  const currentVersion = options.currentVersion ?? DEFAULT_KEY_VERSION;
+
+  if (!Number.isInteger(currentVersion) || currentVersion < 1) {
+    throw new Error(
+      `ENCRYPTION_KEY_VERSION precisa ser um inteiro >= 1 (recebido: ${currentVersion})`,
+    );
+  }
+
   const keys = new Map<number, Buffer>();
 
-  for (const [version, value] of Object.entries(previousKeys)) {
-    keys.set(Number(version), decodeKey(value));
+  for (const [version, value] of Object.entries(options.previousKeys ?? {})) {
+    const parsed = Number(version);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error(`Versão de chave anterior inválida: "${version}"`);
+    }
+    if (parsed === currentVersion) {
+      // Silenciar isto reintroduziria o bug original: a chave atual
+      // sobrescrevendo a antiga no mesmo slot, sem ninguém perceber até a
+      // primeira publicação falhar.
+      throw new Error(
+        `A versão ${parsed} aparece em ENCRYPTION_KEYS_PREVIOUS e também é a versão ` +
+          `atual. Ao rotacionar, incremente ENCRYPTION_KEY_VERSION.`,
+      );
+    }
+    keys.set(parsed, decodeKey(value));
   }
-  keys.set(CURRENT_VERSION, decodeKey(currentKeyBase64));
 
-  return { keys, currentVersion: CURRENT_VERSION };
+  keys.set(currentVersion, decodeKey(currentKeyBase64));
+
+  return { keys, currentVersion };
 }
 
 function decodeKey(value: string): Buffer {
@@ -126,4 +184,54 @@ export function safeCompare(a: string, b: string): boolean {
 /** Checksum de arquivo, para deduplicação e detecção de conteúdo repetido. */
 export function sha256Hex(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * Interpreta `ENCRYPTION_KEYS_PREVIOUS` — as chaves antigas, em JSON por
+ * versão: `{"1":"<base64 de 32 bytes>"}`.
+ *
+ * Vive aqui, e não no schema de ambiente de cada app, porque API e worker
+ * PRECISAM interpretar isso de forma idêntica: é a API que cifra o token no
+ * OAuth e o worker que o decifra para publicar. Duas implementações
+ * divergentes fariam a publicação falhar com "chave versão N não
+ * configurada" — e só em produção, no primeiro post depois da rotação.
+ *
+ * Lança com mensagem explicativa em vez de devolver vazio: uma chave anterior
+ * mal escrita significa que os tokens já gravados não vão decifrar, e falhar
+ * no boot é infinitamente melhor do que descobrir isso publicando.
+ */
+export function parsePreviousKeys(raw: string | undefined): Record<number, string> {
+  if (!raw || raw.trim().length === 0) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      'ENCRYPTION_KEYS_PREVIOUS precisa ser um JSON como {"1":"<chave base64>"}',
+    );
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      'ENCRYPTION_KEYS_PREVIOUS precisa ser um objeto JSON mapeando versão para chave',
+    );
+  }
+
+  const result: Record<number, string> = {};
+
+  for (const [version, key] of Object.entries(parsed as Record<string, unknown>)) {
+    const numero = Number(version);
+    if (!Number.isInteger(numero) || numero < 1) {
+      throw new Error(`ENCRYPTION_KEYS_PREVIOUS: versão inválida "${version}"`);
+    }
+    if (typeof key !== 'string' || Buffer.from(key, 'base64').length !== 32) {
+      throw new Error(
+        `ENCRYPTION_KEYS_PREVIOUS: a chave da versão ${numero} precisa ter 32 bytes em base64`,
+      );
+    }
+    result[numero] = key;
+  }
+
+  return result;
 }

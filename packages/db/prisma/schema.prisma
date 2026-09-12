@@ -912,6 +912,16 @@ model PublishAttempt {
   finishedAt    DateTime?
   durationMs    Int?
 
+  /// Instante em que a chamada à API da plataforma foi DISPARADA.
+  ///
+  /// Existe para responder a única pergunta que importa quando o worker morre
+  /// no meio de uma publicação: chegou a sair? Se este campo está nulo, o
+  /// processo caiu ANTES de falar com a rede — nada foi publicado, e o destino
+  /// pode ser reenfileirado com segurança. Se está preenchido e não há
+  /// `finishedAt`, não há como saber, e re-tentar arriscaria publicar duas
+  /// vezes. A recuperação usa exatamente essa distinção.
+  externalCallStartedAt DateTime?
+
   success      Boolean @default(false)
   errorCode    String?
   errorMessage String?

@@ -86,7 +86,10 @@ export function createContainer(env: Env): Container {
     ...(env.SMTP_PASSWORD ? { password: env.SMTP_PASSWORD } : {}),
   });
 
-  const keyring = buildKeyring(env.ENCRYPTION_KEY);
+  const keyring = buildKeyring(env.ENCRYPTION_KEY, {
+    currentVersion: env.ENCRYPTION_KEY_VERSION,
+    previousKeys: env.ENCRYPTION_KEYS_PREVIOUS,
+  });
   const queues = createQueues(env, redis);
   const platforms = createPlatformServices(env);
   const circuit = createCircuitGuard(createCircuitStore(prisma));

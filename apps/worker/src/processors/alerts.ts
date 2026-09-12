@@ -1,4 +1,5 @@
-import type { Queue } from 'bullmq';
+import { QUEUE_NAMES } from '@app/core';
+import { Queue } from 'bullmq';
 import type { WorkerContainer } from '../container.js';
 
 /**
@@ -191,6 +192,29 @@ export function loadAlertThresholds(container: WorkerContainer): AlertThresholds
 /** Janela de publicações considerada na taxa de falha. */
 const JANELA_HORAS = 24;
 
+/**
+ * Abre uma conexão de leitura para TODAS as filas declaradas em
+ * `QUEUE_NAMES`, e não só para as que o worker guardou numa variável.
+ *
+ * A versão anterior recebia o array de `Queue` do `main.ts`, que só tem
+ * quatro das oito: as outras têm Worker mas nenhum objeto Queue. O alerta de
+ * profundidade ficava cego justamente para `media-processing`, a fila mais
+ * propensa a entupir, já que transcodificar vídeo é o trabalho lento. Pior:
+ * o painel admin mostra as oito, então dava para ver uma fila crescendo que
+ * o alerta não vigiava.
+ *
+ * Derivar de `QUEUE_NAMES` faz uma fila nova entrar na vigilância sozinha.
+ */
+export function openAlertQueues(container: WorkerContainer): Queue[] {
+  return Object.values(QUEUE_NAMES).map(
+    (nome) =>
+      new Queue(nome, {
+        connection: { url: container.env.REDIS_URL, maxRetriesPerRequest: null },
+        prefix: container.env.QUEUE_PREFIX,
+      }),
+  );
+}
+
 export async function collectAlertSnapshot(
   container: WorkerContainer,
   queues: Queue[],
@@ -262,11 +286,22 @@ export async function collectAlertSnapshot(
  */
 export async function processEvaluateAlerts(
   container: WorkerContainer,
-  queues: Queue[],
   cooldown: AlertCooldownStore,
 ): Promise<Alert[]> {
   const thresholds = loadAlertThresholds(container);
-  const snapshot = await collectAlertSnapshot(container, queues);
+
+  // As filas são abertas e FECHADAS a cada rodada. O job roda de 5 em 5
+  // minutos; deixar oito conexões abertas por execução esgotaria o Redis em
+  // algumas horas.
+  const queues = openAlertQueues(container);
+
+  let snapshot: AlertSnapshot;
+  try {
+    snapshot = await collectAlertSnapshot(container, queues);
+  } finally {
+    await Promise.allSettled(queues.map((fila) => fila.close()));
+  }
+
   const alertas = evaluateAlerts(snapshot, thresholds);
 
   const disparados: Alert[] = [];

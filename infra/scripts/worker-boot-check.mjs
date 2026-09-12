@@ -30,6 +30,7 @@ const ESPERADOS = [
   ['token-refresh', 'scan-expiring-tokens', '*/30 * * * *'],
   ['inbox-sync', 'inbox:scan-accounts', '*/15 * * * *'],
   ['maintenance', 'maintenance:evaluate-alerts', '*/5 * * * *'],
+  ['maintenance', 'maintenance:recover-stuck-publishing', '*/5 * * * *'],
   ['maintenance', 'maintenance:reconcile-orphans', '*/2 * * * *'],
   ['maintenance', 'apply-retention', '0 3 * * *'],
 ];

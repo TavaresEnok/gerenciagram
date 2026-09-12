@@ -18,7 +18,12 @@ import { recordDeadLetter } from './lib/dead-letter.js';
 import { createRedisCooldownStore, processEvaluateAlerts } from './processors/alerts.js';
 import { processCollectMetrics } from './processors/analytics.js';
 import { processSyncInbox, scanAccountsForInboxSync } from './processors/inbox.js';
-import { applyRetention, processDataDeletion, reconcileOrphanTargets } from './processors/maintenance.js';
+import {
+  applyRetention,
+  processDataDeletion,
+  reconcileOrphanTargets,
+  recoverStuckPublishing,
+} from './processors/maintenance.js';
 import { processMedia } from './processors/media.js';
 import { processPublishTarget } from './processors/publish.js';
 import { processGenerateReport } from './processors/reports.js';
@@ -38,6 +43,13 @@ const JOB_SCAN_INBOX = 'inbox:scan-accounts';
  * painel admin é PULL — só avisa quem está olhando; este job é o PUSH.
  */
 const JOB_EVALUATE_ALERTS = 'maintenance:evaluate-alerts';
+
+/**
+ * Destrava destinos presos em PUBLISHING por worker morto no meio do envio.
+ * Reenfileira sozinho o que caiu ANTES da chamada à plataforma; o que caiu
+ * durante, marca para conferência em vez de arriscar publicar duas vezes.
+ */
+const JOB_RECOVER_STUCK = 'maintenance:recover-stuck-publishing';
 
 /**
  * Processo de workers.
@@ -226,10 +238,14 @@ async function main(): Promise<void> {
         await reconcileOrphanTargets(container, publishQueue);
         return;
       }
+      if (job.name === JOB_RECOVER_STUCK) {
+        await recoverStuckPublishing(container, publishQueue);
+        return;
+      }
       if (job.name === JOB_EVALUATE_ALERTS) {
-        // `queues` são as mesmas instâncias que o worker usa: a profundidade
-        // medida é a real, não uma reconstrução.
-        await processEvaluateAlerts(container, queues, createRedisCooldownStore(container));
+        // O job abre e fecha as próprias filas, derivadas de QUEUE_NAMES:
+        // passar as instâncias daqui deixava metade das filas sem vigilância.
+        await processEvaluateAlerts(container, createRedisCooldownStore(container));
         return;
       }
       logger.warn({ jobName: job.name }, 'job de manutenção desconhecido');
@@ -276,6 +292,19 @@ async function main(): Promise<void> {
       // conta a cada quarto de hora.
       repeat: { pattern: '*/15 * * * *' },
       jobId: 'repeat:scan-inbox',
+      removeOnComplete: true,
+    },
+  );
+
+  await maintenanceQueue.add(
+    JOB_RECOVER_STUCK,
+    { correlationId: 'recover-stuck-publishing' },
+    {
+      // A cada 5 min. O que decide se um destino está travado é o limite de
+      // 15 min sem atividade, não este intervalo — rodar com frequência só
+      // encurta o tempo até a recuperação.
+      repeat: { pattern: '*/5 * * * *' },
+      jobId: 'repeat:recover-stuck-publishing',
       removeOnComplete: true,
     },
   );

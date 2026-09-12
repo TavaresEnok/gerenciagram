@@ -92,7 +92,10 @@ export function createWorkerContainer(): WorkerContainer {
     redis,
     storage,
     mailer,
-    keyring: buildKeyring(env.ENCRYPTION_KEY),
+    keyring: buildKeyring(env.ENCRYPTION_KEY, {
+      currentVersion: env.ENCRYPTION_KEY_VERSION,
+      previousKeys: env.ENCRYPTION_KEYS_PREVIOUS,
+    }),
     platforms,
     circuit,
   };

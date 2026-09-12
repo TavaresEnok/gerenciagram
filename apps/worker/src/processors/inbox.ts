@@ -160,33 +160,40 @@ async function gravarComentarios(
     comentarios: RemoteComment[];
   },
 ): Promise<number> {
-  let novos = 0;
+  if (params.comentarios.length === 0) return 0;
 
+  const antes = await container.prisma.comment.count({
+    where: {
+      socialAccountId: params.socialAccountId,
+      remoteId: { in: params.comentarios.map((comentario) => comentario.remoteId) },
+    },
+  });
+
+  /**
+   * `upsert` numa operação só, e não `findUnique` seguido de `create`.
+   *
+   * Ler e depois escrever deixava uma janela: duas rodadas concorrentes da
+   * mesma conta encontravam "não existe" e as duas tentavam inserir — a
+   * segunda batia na UNIQUE e derrubava o job com exceção não tratada. O
+   * `upsert` resolve no banco, que é quem tem a informação.
+   *
+   * O `update` toca SÓ no corpo: `isRead`, `isReplied` e `replyBody` são
+   * estado nosso, não da plataforma. Reescrevê-los faria a ressincronização
+   * devolver para a fila todo comentário que a equipe já tratou.
+   */
   for (const comentario of params.comentarios) {
-    const existente = await container.prisma.comment.findUnique({
+    await container.prisma.comment.upsert({
       where: {
         socialAccountId_remoteId: {
           socialAccountId: params.socialAccountId,
           remoteId: comentario.remoteId,
         },
       },
-      select: { id: true },
-    });
-
-    if (existente) {
-      // O corpo pode ter sido editado na rede; o estado de leitura é NOSSO.
-      await container.prisma.comment.update({
-        where: { id: existente.id },
-        data: {
-          body: comentario.body,
-          ...(comentario.raw !== undefined ? { raw: comentario.raw as object } : {}),
-        },
-      });
-      continue;
-    }
-
-    await container.prisma.comment.create({
-      data: {
+      update: {
+        body: comentario.body,
+        ...(comentario.raw !== undefined ? { raw: comentario.raw as object } : {}),
+      },
+      create: {
         organizationId: params.organizationId,
         socialAccountId: params.socialAccountId,
         platform: params.platform as never,
@@ -201,11 +208,9 @@ async function gravarComentarios(
         ...(comentario.raw !== undefined ? { raw: comentario.raw as object } : {}),
       },
     });
-
-    novos += 1;
   }
 
-  return novos;
+  return params.comentarios.length - antes;
 }
 
 /**

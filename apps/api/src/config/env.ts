@@ -1,3 +1,4 @@
+import { parsePreviousKeys } from '@app/platform';
 import { z } from 'zod';
 
 /**
@@ -22,6 +23,23 @@ const base64Key32 = z
     },
     { message: 'precisa ser 32 bytes em base64 (gere com: openssl rand -base64 32)' },
   );
+
+const previousKeys = z
+  .string()
+  .optional()
+  .transform((value, ctx): Record<number, string> => {
+    // A interpretação vive em @app/platform: API e worker PRECISAM ler isto
+    // de forma idêntica, senão um cifra numa versão e o outro não decifra.
+    try {
+      return parsePreviousKeys(value);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    }
+  });
 
 
 /**
@@ -68,6 +86,14 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32, 'use pelo menos 32 caracteres'),
   JWT_REFRESH_SECRET: z.string().min(32, 'use pelo menos 32 caracteres'),
   ENCRYPTION_KEY: base64Key32,
+  /**
+   * Versão da chave atual. Ao rotacionar, incremente e mova a anterior para
+   * ENCRYPTION_KEYS_PREVIOUS — sem isso, a chave nova ocupa o slot da antiga
+   * e todo token OAuth já gravado deixa de decifrar.
+   */
+  ENCRYPTION_KEY_VERSION: z.coerce.number().int().min(1).default(1),
+  /** Chaves anteriores em JSON, por versão: {"1":"<base64 de 32 bytes>"} */
+  ENCRYPTION_KEYS_PREVIOUS: previousKeys,
   ACCESS_TOKEN_TTL: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL: z.coerce.number().int().positive().default(2_592_000),
   COOKIE_DOMAIN: z.string().default('localhost'),

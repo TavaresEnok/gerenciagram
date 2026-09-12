@@ -3,10 +3,12 @@ import {
   publishJobId,
   type ProcessDataDeletionPayload,
 } from '@app/core';
-import { revokeAndClear } from '@app/platform';
+import { releaseQuota, revokeAndClear } from '@app/platform';
 import type { Job, Queue } from 'bullmq';
 import type { WorkerContainer } from '../container.js';
 import { adapterContext } from '../lib/adapter-context.js';
+import { notify } from '../lib/notifications.js';
+import { recomputePostStatus } from '../lib/post-status.js';
 
 /**
  * Retenção de dados e direito de exclusão (SPEC seção 11).
@@ -313,3 +315,193 @@ export async function reconcileOrphanTargets(
   return recovered;
 }
 
+
+// ---------------------------------------------------------------------------
+//  Recuperação de destinos travados em PUBLISHING
+// ---------------------------------------------------------------------------
+
+/**
+ * Tempo mínimo em PUBLISHING antes de considerar o destino travado.
+ *
+ * Precisa ser confortavelmente maior que o `lockDuration` do worker (5 min):
+ * enquanto o lock vale, o job pode estar simplesmente demorando — um upload
+ * de vídeo grande leva minutos, e recuperar um destino que ainda está sendo
+ * publicado é a receita para publicar duas vezes.
+ */
+const LIMITE_TRAVADO_MS = 15 * 60_000;
+
+export interface StuckRecoveryResult {
+  /** Caiu antes de falar com a plataforma: reenfileirados com segurança. */
+  reenfileirados: number;
+  /** Caiu durante a chamada: não dá para saber se saiu, marcados para conferência. */
+  inconclusivos: number;
+}
+
+/**
+ * Destrava destinos presos em PUBLISHING — e resolve sozinho o que dá para
+ * resolver sem risco.
+ *
+ * O buraco que isto fecha: se o worker morre entre marcar PUBLISHING e gravar
+ * o resultado (OOM, container morto, deploy no meio), o destino ficava preso
+ * PARA SEMPRE. A reentrega do BullMQ não o recupera, porque o claim só aceita
+ * SCHEDULED e QUEUED; o reconciliador não olha para PUBLISHING; "tentar
+ * novamente" só toca em FAILED; e cancelar exclui PUBLISHING. Sobrava SQL na
+ * mão — e a cota, reservada antes da chamada, vazava junto.
+ *
+ * A decisão de re-tentar ou não NÃO é um chute. `PublishAttempt.externalCallStartedAt`
+ * é gravado imediatamente antes da chamada à plataforma, então:
+ *
+ *  - **nulo** → o processo caiu ANTES de falar com a rede. Nada foi publicado.
+ *    Devolve a cota, volta para SCHEDULED e reenfileira. Totalmente
+ *    automático, risco zero. É a maioria dos casos, porque a janela da
+ *    chamada externa é pequena perto do resto do trabalho.
+ *
+ *  - **preenchido** → a chamada saiu e não sabemos o desfecho. Re-tentar aqui
+ *    poderia publicar o mesmo conteúdo duas vezes, que é a única coisa que
+ *    este sistema não pode fazer. Então marca FAILED com um código próprio,
+ *    devolve a cota e avisa quem pode conferir — o destino volta a ser
+ *    acionável ("tentar novamente" passa a funcionar) em vez de ficar preso.
+ */
+export async function recoverStuckPublishing(
+  container: WorkerContainer,
+  publishQueue: Queue,
+): Promise<StuckRecoveryResult> {
+  const log = container.logger.child({ job: 'recover-stuck-publishing' });
+  const limite = new Date(Date.now() - LIMITE_TRAVADO_MS);
+
+  const travados = await container.prisma.postTarget.findMany({
+    where: {
+      status: 'PUBLISHING',
+      deletedAt: null,
+      // `remoteId` preenchido significa que a publicação chegou a ser
+      // registrada: não é um destino travado, é um que ainda vai ser
+      // finalizado pelo próprio processador.
+      remoteId: null,
+      lastAttemptAt: { lt: limite },
+    },
+    select: {
+      id: true,
+      postId: true,
+      organizationId: true,
+      socialAccountId: true,
+      platform: true,
+      attempts: true,
+      maxAttempts: true,
+      idempotencyKey: true,
+      scheduledAt: true,
+      socialAccount: { select: { nickname: true } },
+    },
+    take: 50,
+  });
+
+  const resultado: StuckRecoveryResult = { reenfileirados: 0, inconclusivos: 0 };
+  if (travados.length === 0) return resultado;
+
+  for (const target of travados) {
+    const ultimaTentativa = await container.prisma.publishAttempt.findFirst({
+      where: { postTargetId: target.id },
+      orderBy: { attemptNumber: 'desc' },
+      select: { id: true, externalCallStartedAt: true, finishedAt: true },
+    });
+
+    // A cota foi reservada antes da chamada e ninguém a devolveu: sem isto,
+    // cada worker morto queima uma publicação do dia para sempre.
+    await releaseQuota(container.prisma, {
+      platform: target.platform,
+      socialAccountId: target.socialAccountId,
+      at: new Date(),
+    }).catch((error: unknown) => {
+      log.warn({ err: error, postTargetId: target.id }, 'falha ao devolver a cota');
+    });
+
+    const chegouAChamar = ultimaTentativa?.externalCallStartedAt != null;
+
+    if (!chegouAChamar) {
+      // Certeza de que nada foi publicado.
+      const devolvido = await container.prisma.postTarget.updateMany({
+        where: { id: target.id, status: 'PUBLISHING', remoteId: null },
+        data: { status: 'SCHEDULED', jobId: null },
+      });
+
+      // Perdeu a corrida para o processador de verdade: ele voltou à vida
+      // entre a leitura e agora. Deixa com ele.
+      if (devolvido.count === 0) continue;
+
+      const jobId = publishJobId(target.id);
+      await publishQueue.remove(jobId).catch(() => undefined);
+      await publishQueue.add(
+        JOB_PUBLISH_TARGET,
+        {
+          postTargetId: target.id,
+          organizationId: target.organizationId,
+          platform: target.platform,
+          idempotencyKey: target.idempotencyKey,
+          correlationId: `recovered-${target.id}`,
+        },
+        {
+          jobId,
+          attempts: Math.max(1, target.maxAttempts - target.attempts),
+          backoff: { type: 'exponential', delay: 30_000 },
+        },
+      );
+
+      await container.prisma.postTarget.update({
+        where: { id: target.id },
+        data: { jobId, status: 'QUEUED' },
+      });
+
+      resultado.reenfileirados += 1;
+      continue;
+    }
+
+    // A chamada saiu e o desfecho é desconhecido.
+    const marcado = await container.prisma.postTarget.updateMany({
+      where: { id: target.id, status: 'PUBLISHING', remoteId: null },
+      data: {
+        status: 'FAILED',
+        jobId: null,
+        errorCode: 'PUBLISH_INTERRUPTED_UNVERIFIED',
+        errorPermanent: true,
+        errorMessage:
+          'O processo caiu durante o envio para a plataforma e não foi possível confirmar ' +
+          'se a publicação saiu. Confira a conta antes de tentar novamente: reenviar às ' +
+          'cegas poderia publicar o mesmo conteúdo duas vezes.',
+      },
+    });
+
+    if (marcado.count === 0) continue;
+
+    if (ultimaTentativa) {
+      await container.prisma.publishAttempt.update({
+        where: { id: ultimaTentativa.id },
+        data: {
+          finishedAt: new Date(),
+          success: false,
+          errorCode: 'PUBLISH_INTERRUPTED_UNVERIFIED',
+          errorMessage: 'Processo interrompido durante a chamada à plataforma.',
+        },
+      });
+    }
+
+    await notify(container, {
+      organizationId: target.organizationId,
+      type: 'POST_FAILED',
+      title: `Publicação interrompida em ${target.socialAccount.nickname}`,
+      body:
+        `O envio para ${target.socialAccount.nickname} foi interrompido e não deu para ` +
+        'confirmar se o post saiu. Confira a conta: se não saiu, use "tentar novamente".',
+      actionUrl: `/fila?post=${target.postId}`,
+      metadata: { postTargetId: target.id, motivo: 'PUBLISH_INTERRUPTED_UNVERIFIED' },
+    });
+
+    resultado.inconclusivos += 1;
+  }
+
+  for (const postId of new Set(travados.map((target) => target.postId))) {
+    await recomputePostStatus(container.prisma, postId);
+  }
+
+  log.warn(resultado, 'destinos travados em PUBLISHING recuperados');
+
+  return resultado;
+}

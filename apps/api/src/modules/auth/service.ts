@@ -445,10 +445,49 @@ export class AuthService {
       throw new UnauthorizedError('Seu acesso a esta organização não está mais ativo.');
     }
 
-    await this.prisma.session.update({
-      where: { id: session.id },
+    /**
+     * UPDATE condicional — o mesmo padrão do claim de publicação.
+     *
+     * Ler `rotatedAt` e só depois gravá-lo deixava uma janela entre as duas
+     * operações: dois pedidos simultâneos com o MESMO token passavam os dois
+     * pela checagem acima e recebiam sessões novas válidas. É exatamente o
+     * cenário de token roubado que a detecção de reuso existe para pegar, e
+     * ele escapava por concorrência. Quem marca a rotação é o banco.
+     */
+    const rotated = await this.prisma.session.updateMany({
+      where: { id: session.id, rotatedAt: null, revokedAt: null },
       data: { rotatedAt: new Date() },
     });
+
+    if (rotated.count === 0) {
+      // Perdemos a corrida: outro pedido rotacionou este mesmo token entre a
+      // leitura e agora. Tratamos como reuso, que é o que provavelmente é.
+      await this.prisma.session.updateMany({
+        where: { familyId: session.familyId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      this.container.logger.warn(
+        {
+          userId: session.userId,
+          familyId: session.familyId,
+          correlationId: input.meta.correlationId,
+        },
+        'refresh token usado em paralelo — família de sessões revogada',
+      );
+
+      await recordAudit(this.prisma, {
+        actorUserId: session.userId,
+        action: 'auth.refresh_reuse_detected',
+        entityType: 'Session',
+        entityId: session.id,
+        ipAddress: input.meta.ipAddress ?? null,
+        userAgent: input.meta.userAgent ?? null,
+        correlationId: input.meta.correlationId,
+      });
+
+      throw new UnauthorizedError('Sua sessão foi encerrada por segurança. Entre novamente.');
+    }
 
     return this.issueSession({
       userId: session.userId,

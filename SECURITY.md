@@ -275,3 +275,44 @@ medidas foram tomadas e o que o titular deve fazer.
 - [ ] `pnpm audit` sem vulnerabilidade crítica
 - [ ] Retenção de dados configurada por organização
 - [ ] Contatos de resposta a incidente documentados
+
+---
+
+## Rotação da chave de criptografia
+
+Os tokens OAuth são cifrados em repouso com AES-256-GCM, e cada valor guarda
+a VERSÃO da chave que o cifrou (`oauth_tokens.keyVersion`). É isso que permite
+trocar a chave sem obrigar todo mundo a reconectar as contas.
+
+A ordem importa:
+
+```bash
+# 1. Gere a chave nova
+openssl rand -base64 32
+
+# 2. No .env, os três de uma vez:
+ENCRYPTION_KEY=<chave nova>
+ENCRYPTION_KEY_VERSION=2
+ENCRYPTION_KEYS_PREVIOUS={"1":"<chave antiga>"}
+
+# 3. Reinicie API e worker JUNTOS — os dois precisam do mesmo chaveiro.
+```
+
+O que já está no banco continua sendo decifrado com a v1; o que for gravado
+daqui em diante nasce v2. A chave antiga só pode sair de
+`ENCRYPTION_KEYS_PREVIOUS` quando nenhuma linha referenciar mais aquela
+versão:
+
+```sql
+SELECT "keyVersion", count(*) FROM oauth_tokens GROUP BY "keyVersion";
+```
+
+**Trocar `ENCRYPTION_KEY` sem incrementar `ENCRYPTION_KEY_VERSION` faz o
+processo se recusar a subir**, e isso é proposital. Antes o sistema aceitava
+em silêncio, e o resultado era o pior possível: a chave nova ocupava o slot da
+antiga, todo texto cifrado marcado `v1` passava a falhar na verificação da tag
+GCM, e cada conta conectada precisava ser reconectada à mão. Um erro no boot é
+infinitamente melhor do que descobrir isso na primeira publicação.
+
+A recuperação de um backup exige a chave da versão correspondente. O `.dump`
+não a carrega — ela vive no cofre de segredos (ver `DEPLOYMENT.md`).
