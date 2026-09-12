@@ -154,6 +154,29 @@ deploy carrega junto. As três imagens agora constroem, e a da API passa nas
 A conta era criada e a requisição respondia 500. Agora o envio do e-mail de
 verificação falha em silêncio (com log de erro) e o usuário pode pedir reenvio.
 
+### Revisão de 2026-09-12
+
+Uma revisão do sistema inteiro encontrou mais cinco defeitos, todos corrigidos
+e cobertos por teste (commit `e95beba`):
+
+**Destino travado em PUBLISHING não tinha saída.** Worker morto no meio do
+envio deixava o destino preso para sempre — nenhum dos quatro caminhos de
+recuperação o alcançava, e a cota vazava. Agora o job
+`maintenance:recover-stuck-publishing` decide pelo campo
+`PublishAttempt.externalCallStartedAt`, gravado imediatamente antes da chamada
+à plataforma: se o processo caiu ANTES, reenfileira sozinho; se caiu DURANTE,
+marca `PUBLISH_INTERRUPTED_UNVERIFIED` e avisa para conferir a conta, porque
+re-tentar poderia publicar duas vezes. Nos dois casos devolve a cota.
+
+**A rotação da chave de criptografia não funcionava.** A versão era fixa em 1,
+então trocar `ENCRYPTION_KEY` tornava todos os tokens OAuth indecifráveis.
+Agora vem de `ENCRYPTION_KEY_VERSION`, e trocar a chave sem incrementar é
+recusado no boot. Procedimento em `SECURITY.md`.
+
+**Corrida na rotação de refresh token**, **alerta de fila vigiando metade das
+filas** e **corrida na gravação de comentários da inbox** — os três trocados
+por operações atômicas no banco ou derivadas da fonte única (`QUEUE_NAMES`).
+
 ---
 
 ## Verificações de conformidade com a SPEC
