@@ -173,12 +173,34 @@ inteira (`pnpm dev`) e o smoke test passa **36/36** (`infra/scripts/smoke-test.m
 - Falha de banco depois do sucesso remoto: coberta pelo caminho
   PUBLISH_INTERRUPTED_UNVERIFIED já existente (testado), não por injeção nova.
 
-### Próximo passo recomendado
+---
 
-1. Corrigir o lint (ESLint flat config por pacote) — hoje nenhum guarda-chuva
-   de estilo funciona.
-2. Com credenciais de teste do YouTube, validar o ciclo completo
-   conectar→publicar→confirmar numa conta real autorizada (o STATUS lista o
-   passo a passo).
-3. Depois: ordem de evolução item 2 (compositor/calendário) ou benchmark
-   medido contra Postiz em tarefa equivalente.
+## Ciclo 2026-10-03 (2º) — Reparo do lint, a guarda quebrada do baseline
+
+**Problema:** `pnpm lint` não funcionava em nenhum pacote desde a adoção do
+ESLint 9: os pacotes de backend não tinham `eslint.config` (o v9 exige o
+formato flat) e o `next lint` do web, sem configuração, caía num prompt
+interativo. Ou seja: o repo declarava um guarda-chuva que não existia.
+
+**Mudança:** `eslint.config.mjs` na raiz (`@eslint/js` recommended +
+`typescript-eslint` recommended, alvo TS/Node, ignorando dist/generated) para
+api, worker, core, platform e db; `apps/web/eslint.config.mjs` com
+`eslint-config-next` 15.5 (formato legado) via `FlatCompat`. Script do web
+migrado para `eslint . --max-warnings 0`. Achados reais corrigidos de
+verdade: 3 imports não usados, 1 atribuição inútil, 1 `cause` ausente em
+erro reencadeado, 1 `as any` no compositor (virou tipo da união) e 2
+`useMemo` mal delimitados.
+
+**Verificação:** `pnpm lint` 6/6, `pnpm typecheck` 9/9, `pnpm test` inteiro
+verde (68 worker + 26 api + 77 core + 52 platform), `pnpm build` 6/6.
+
+**Commit:** a registrar no próprio commit do lote.
+
+### Fila técnica em aberto
+
+- Validar o ciclo real conectar → publicar → confirmar (PROCESSING → READY)
+  numa conta autorizada do YouTube — bloqueia nas credenciais (ver STATUS.md).
+- Benchmark medido contra Postiz/OpenPost numa tarefa equivalente, com
+  versões/condições registradas (diretriz 6 das revisões).
+- Depois: ordem de evolução — compositor/calendário (item 2) ou o primeiro
+  diferencial completo (item 4).

@@ -170,6 +170,7 @@ async function ffprobe(container: WorkerContainer, filePath: string): Promise<Ff
       throw new Error(
         `FFprobe não encontrado em "${binary}". ` +
           `Instale o FFmpeg ou ajuste FFPROBE_PATH no .env.`,
+        { cause: error },
       );
     }
     throw error;

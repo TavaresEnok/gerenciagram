@@ -30,11 +30,11 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 
 **Verificação (03/10/2026):** 223 testes automatizados passando — 68 no worker
 (contra Postgres e BullMQ REAL), 26 na API, 77 no core e 52 no platform.
-Typecheck limpo nos 9 pacotes. **Lint está quebrado no baseline** (ESLint 9 sem
-`eslint.config`), registrado como pendência. Validação contra contas reais das
-redes segue bloqueada por credenciais (seção abaixo) — os fluxos do primeiro
-ciclo foram provados com testes automatizados e integração de fila real, sem
-chamadas externas.
+Typecheck limpo nos 9 pacotes, **lint 6/6 funcionando** (reparado neste ciclo —
+estava quebrado desde a adoção do ESLint 9), build 6/6 e smoke test 36/36.
+Validação contra contas reais das redes segue bloqueada por credenciais
+(seção abaixo) — os fluxos do primeiro ciclo foram provados com testes
+automatizados e integração de fila real, sem chamadas externas.
 
 
 ---
@@ -210,9 +210,9 @@ escondia). Detalhes em `docs/IMPLEMENTATION_PROGRESS.md`:
    — timeout depois do envio mantém a reserva, porque a plataforma pode ter
    cobrado.
 
-Registrado como falha preexistente (não corrigida neste ciclo): **o lint está
-quebrado no baseline** — os pacotes usam ESLint 9 sem `eslint.config` e o
-`next lint` do web entra em prompt interativo. Entra na fila técnica.
+O lint, quebrado no baseline (ESLint 9 sem configuração flat), foi reparado
+logo em seguida e os achados reais foram corrigidos — ver o 2º ciclo em
+`docs/IMPLEMENTATION_PROGRESS.md`.
 
 ---
 

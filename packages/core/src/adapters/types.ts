@@ -1,5 +1,3 @@
-import type { PlatformKey, RequiredUxField } from '../platform/capabilities.js';
-
 /**
  * Tipos de fronteira entre o núcleo e os adapters de plataforma.
  *

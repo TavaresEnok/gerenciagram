@@ -25,7 +25,7 @@ import {
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import React, { useState, type ReactNode } from 'react';
-import { Botao, Carregando, Etiqueta } from '@/components/ui';
+import { Carregando, Etiqueta } from '@/components/ui';
 import { ProvedorSessao, useApi, useExigirSessao } from '@/lib/sessao';
 
 /**

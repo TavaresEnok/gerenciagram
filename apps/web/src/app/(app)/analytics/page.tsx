@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Aviso, Botao, Cartao, Carregando, Etiqueta, Metrica, Selecao, Vazio } from '@/components/ui';
+import { Aviso, Cartao, Carregando, Metrica, Selecao, Vazio } from '@/components/ui';
 import { useApi } from '@/lib/sessao';
 
 /**

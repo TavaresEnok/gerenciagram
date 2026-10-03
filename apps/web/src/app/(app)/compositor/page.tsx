@@ -181,8 +181,8 @@ export default function PaginaCompositor() {
   const [processando, setProcessando] = useState(false);
   const [seletorMidia, setSeletorMidia] = useState(false);
 
-  const contas = contasResposta?.accounts ?? [];
-  const grupos = gruposResposta?.groups ?? [];
+  const contas = useMemo(() => contasResposta?.accounts ?? [], [contasResposta]);
+  const grupos = useMemo(() => gruposResposta?.groups ?? [], [gruposResposta]);
   const midias = midiasResposta?.assets ?? [];
   const plataformas = plataformasResposta?.platforms ?? [];
 
@@ -824,7 +824,7 @@ export default function PaginaCompositor() {
               <Selecao
                 rotulo="Tipo de geração"
                 value={iaKind}
-                onChange={(e) => setIaKind(e.target.value as any)}
+                onChange={(e) => setIaKind(e.target.value as typeof iaKind)}
               >
                 <option value="CAPTION">Legenda completa</option>
                 <option value="TITLE">Título atraente</option>

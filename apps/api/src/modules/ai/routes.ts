@@ -130,7 +130,7 @@ export async function registerAiRoutes(
       const requirements = definition.mediaRequirements;
       const provider = detectProvider(container);
 
-      let suggestions: string[] = [];
+      let suggestions: string[];
       let usedProvider: string = provider;
 
       const prompt = buildPrompt(request.body, definition.displayName, requirements);

@@ -2,7 +2,6 @@ import type {
   MediaSpec,
   PlatformDefinition,
   PlatformKey,
-  QuotaRule,
 } from '../platform/capabilities.js';
 import { groupBySimilarity } from './similarity.js';
 
