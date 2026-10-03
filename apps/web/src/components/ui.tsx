@@ -264,6 +264,7 @@ export function EtiquetaStatus({ status }: { status: string }) {
     SCHEDULED: { rotulo: 'Agendado', tom: 'info' },
     QUEUED: { rotulo: 'Na fila', tom: 'info' },
     PUBLISHING: { rotulo: 'Publicando', tom: 'alerta' },
+    PROCESSING: { rotulo: 'Processando na rede', tom: 'alerta' },
     PUBLISHED: { rotulo: 'Publicado', tom: 'sucesso' },
     PARTIALLY_PUBLISHED: { rotulo: 'Publicado em parte', tom: 'alerta' },
     FAILED: { rotulo: 'Falhou', tom: 'erro' },

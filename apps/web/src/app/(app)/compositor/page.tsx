@@ -161,6 +161,18 @@ export default function PaginaCompositor() {
   const [iaSugestoes, setIaSugestoes] = useState<string[]>([]);
   const [iaProvider, setIaProvider] = useState<string | null>(null);
   const [iaCopiado, setIaCopiado] = useState<number | null>(null);
+  /**
+   * Proveniência do texto: true depois que uma sugestão da IA foi APLICADA
+   * a este conteúdo nesta tela. É isso que vai no `aiGenerated` do save —
+   * sem isto, o texto sugerido entrava como se tivesse sido digitado.
+   */
+  const [conteudoUsouIa, setConteudoUsouIa] = useState(false);
+  /** Estado de revisão gravado no servidor (vem da resposta do save). */
+  const [iaRevisao, setIaRevisao] = useState<{
+    aiGenerated: boolean;
+    aiReviewedAt: string | null;
+  } | null>(null);
+  const [registrandoRevisao, setRegistrandoRevisao] = useState(false);
 
   // --- Preview ---
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -216,16 +228,29 @@ export default function PaginaCompositor() {
         body: corpo,
         hashtags: listaHashtags,
         mediaAssetIds: midiasSelecionadas,
+        // Proveniência: se uma sugestão da IA foi aplicada nesta tela, o
+        // conteúdo É de IA e o servidor passa a exigir revisão humana antes
+        // de agendar/publicar. Sem este campo a revisão seria burlável.
+        ...(conteudoUsouIa ? { aiGenerated: true } : {}),
       };
 
       const conteudo = contentId
-        ? await api<{ id: string }>(`/v1/contents/${contentId}`, {
-            method: 'PATCH',
-            body: corpoConteudo,
-          })
-        : await api<{ id: string }>('/v1/contents', { method: 'POST', body: corpoConteudo });
+        ? await api<{ id: string; aiGenerated: boolean; aiReviewedAt: string | null }>(
+            `/v1/contents/${contentId}`,
+            {
+              method: 'PATCH',
+              body: corpoConteudo,
+            },
+          )
+        : await api<{ id: string; aiGenerated: boolean; aiReviewedAt: string | null }>(
+            '/v1/contents',
+            { method: 'POST', body: corpoConteudo },
+          );
 
       setContentId(conteudo.id);
+      // O servidor é a fonte da verdade da revisão: editar depois de revisar
+      // derruba a aprovação, e é a resposta dele que reflete isso na tela.
+      setIaRevisao({ aiGenerated: conteudo.aiGenerated, aiReviewedAt: conteudo.aiReviewedAt });
 
       // Variações por rede (e overrides por conta) num único PUT.
       const listaVariacoes = Object.entries(variacoes).map(([chave, valor]) => {
@@ -274,6 +299,7 @@ export default function PaginaCompositor() {
     hashtags,
     midiasSelecionadas,
     contentId,
+    conteudoUsouIa,
     variacoes,
     gruposSelecionados,
     contasSelecionadas,
@@ -364,8 +390,39 @@ export default function PaginaCompositor() {
     } else if (iaKind === 'HASHTAGS') {
       setHashtags(texto.replace(/#/g, '').trim());
     }
+    // Proveniência: o texto aplicado veio da IA. O save manda isso ao
+    // servidor, que passa a exigir revisão humana antes de publicar.
+    setConteudoUsouIa(true);
     setModalIaAberto(false);
     sucesso('Conteúdo aplicado ao post!', 'Lembre-se: conteúdo de IA requer revisão humana.');
+  }
+
+  /**
+   * Revisão humana é uma AÇÃO explícita — nunca um efeito colateral de
+   * editar ou salvar. Vinculada à versão revisada no servidor: mexer no
+   * texto depois exige revisar de novo.
+   */
+  async function registrarRevisaoIa() {
+    if (!contentId) return;
+    setRegistrandoRevisao(true);
+    setErro(null);
+
+    try {
+      const resposta = await api<{ reviewedAt: string }>(`/v1/contents/${contentId}/ai-review`, {
+        method: 'POST',
+      });
+      setIaRevisao((atual) =>
+        atual ? { ...atual, aiReviewedAt: resposta.reviewedAt } : atual,
+      );
+      sucesso('Revisão registrada', 'O conteúdo foi aprovado para publicação.');
+    } catch (caught) {
+      toastErro(
+        'Não foi possível registrar a revisão',
+        caught instanceof ApiError ? caught.message : String(caught),
+      );
+    } finally {
+      setRegistrandoRevisao(false);
+    }
   }
 
   function copiarSugestao(texto: string, idx: number) {
@@ -401,6 +458,27 @@ export default function PaginaCompositor() {
       </header>
 
       {erro && <Aviso tom="erro">{erro}</Aviso>}
+
+      {iaRevisao?.aiGenerated && iaRevisao.aiReviewedAt === null && (
+        <Aviso tom="alerta" titulo="Revisão humana pendente">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p>
+              Este conteúdo foi gerado com ajuda da IA. Revise o texto e as variações e registre
+              a revisão — sem isso, o agendamento e a publicação são bloqueados.
+            </p>
+            <Botao variante="primaria" onClick={() => void registrarRevisaoIa()} disabled={registrandoRevisao}>
+              {registrandoRevisao ? 'Registrando…' : 'Registrar revisão humana'}
+            </Botao>
+          </div>
+        </Aviso>
+      )}
+
+      {iaRevisao?.aiGenerated && iaRevisao.aiReviewedAt !== null && (
+        <Aviso tom="sucesso">
+          Conteúdo de IA revisado por um integrante da equipe. Se o texto ou as variações forem
+          alterados, uma nova revisão será exigida.
+        </Aviso>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr,380px]">
         <div className="space-y-6">

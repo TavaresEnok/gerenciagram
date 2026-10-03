@@ -213,9 +213,18 @@ Modestas de propósito — e documentadas para poderem ser apertadas depois.
 | Dado | Estratégia |
 |---|---|
 | **Postgres** | Dump diário + WAL archiving em produção |
-| **Mídia (S3)** | Replicação do provedor; versionamento de objeto |
+| **Mídia (S3)** | Replicação do provedor — **sem** versionamento no bucket de produção |
 | **Redis** | `appendonly` ligado. Perder a fila atrasa publicações, mas os `PostTarget` no banco permitem reenfileirar |
 | **Segredos** | Fora do backup de dados, em cofre próprio |
+
+> **Por que o bucket SEM versionamento.** A retenção e o direito de exclusão
+> (LGPD) apagam os objetos do storage. Num bucket com versionamento ligado,
+> `DeleteObject` cria apenas um *delete marker* e os bytes antigos
+> permanecem — a exclusão deixaria de ser física e o expurgo viraria
+> ilusão. Se o provedor exigir versionamento, configure uma regra de
+> ciclo de vida que remova as versões não-correntes no mesmo prazo da
+> retenção e valide com uma exclusão de teste, não com a leitura da
+> documentação.
 
 ### Backup do Postgres
 

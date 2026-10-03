@@ -168,6 +168,30 @@ GET  /v1/posts                        calendário e fila (filtra por grupo/conta
 GET  /v1/posts/:id                    detalhe com o estado de cada destino
 ```
 
+**Estados de um destino** (`PostTarget.status`): `PENDING`, `SCHEDULED`,
+`QUEUED`, `PUBLISHING` (upload em curso), `PROCESSING` (a plataforma **aceitou**
+o envio, mas ainda processa de forma assíncrona — TikTok, YouTube e vídeos do
+Facebook; a confirmação vem do job de verificação remota), `PUBLISHED`
+(confirmado), `FAILED`, `CANCELLED`, `SKIPPED`. "Aceito" nunca é anunciado
+como "publicado": a notificação de sucesso só sai na confirmação, e um
+processamento que expira vira `REMOTE_PROCESSING_TIMEOUT` (resultado
+**desconhecido**, pedindo conferência — nunca sucesso).
+
+**Retry de destinos com resultado desconhecido.** `POST /v1/posts/:id/retry`
+trata falha confirmada e resultado desconhecido de formas diferentes:
+
+- falha confirmada (rejeitada pela plataforma, erro permanente) volta à fila
+  normalmente;
+- resultado desconhecido **com** identificador da operação remota
+  (`REMOTE_PROCESSING_TIMEOUT`, `REMOTE_STATE_CHECK_FAILED`) **não recria
+  nada**: o destino volta a `PROCESSING` e só a verificação do estado remoto é
+  reenfileirada;
+- resultado desconhecido **sem** identificador (`PUBLISH_INTERRUPTED_UNVERIFIED`,
+  ex.: worker morto no meio do upload) exige `{"acknowledgeUnverified": true}`
+  no corpo — a concordância vai para a auditoria. Sem ela, a API responde 422
+  com `code: UNVERIFIED_RETRY_REQUIRES_ACK` e a lista das contas a conferir,
+  sem tocar em nenhum destino.
+
 `duplicate` cria uma publicação nova ligada à original por `duplicatedFromId`.
 Dois padrões que valem conhecer antes de mudar:
 
@@ -248,7 +272,14 @@ O sistema suporta três classes de provedores com fallback transparente:
   ```
   Retorna `{ suggestions: string[], requiresHumanReview: true, provider: string, constraints: { ... } }`.
 - `POST /v1/contents/:id/ai-review`:
-  Registra a aprovação humana de um conteúdo gerado por IA (`aiReviewedAt = now()`). O worker rejeita publicar conteúdos marcados com `aiGenerated = true` sem esta confirmação.
+  Registra a aprovação humana de um conteúdo gerado por IA. Ação **explícita e
+  vinculada à versão lida**: `aiReviewedAt` é gravado junto com o hash do
+  conteúdo (texto, hashtags, variações por rede/conta e campos de plataforma).
+  Um PATCH posterior — autosave, edição pela API ou por um agente — **nunca**
+  confirma revisão; e mudar qualquer parte do que vai para a rede depois da
+  aprovação invalida `aiReviewedAt`, exigindo revisar de novo. O agendamento
+  já bloqueia conteúdo de IA não revisado (`AI_REVIEW_REQUIRED` no preview), e
+  o worker mantém a mesma barreira como última linha.
 
 ---
 

@@ -1,14 +1,13 @@
 import {
   PLATFORM_KEYS,
   PlatformApiError,
-  ValidationError,
   getPlatformDefinition,
   withTimeout,
-  type PlatformKey,
 } from '@app/core';
 import { z } from 'zod';
 import type { Container } from '../../container.js';
 import { recordAudit } from '../../lib/audit.js';
+import { registerHumanReview } from '../../lib/ai-review.js';
 import { requireAuth } from '../../plugins/auth.js';
 import type { AppInstance } from '../../types.js';
 import { generateLocalDraft, sanitizeSuggestions } from './local-generator.js';
@@ -209,27 +208,9 @@ export async function registerAiRoutes(
     async (request) => {
       const auth = requireAuth(request);
 
-      const content = await container.prisma.content.findFirst({
-        where: {
-          id: request.params.contentId,
-          organizationId: auth.organizationId,
-          deletedAt: null,
-        },
-        select: { id: true, aiGenerated: true },
-      });
-
-      if (!content) throw new ValidationError('Conteúdo não encontrado.');
-      if (!content.aiGenerated) {
-        throw new ValidationError(
-          'Este conteúdo não foi gerado por IA — não há revisão de IA a registrar.',
-        );
-      }
-
-      const reviewedAt = new Date();
-
-      await container.prisma.content.update({
-        where: { id: content.id },
-        data: { aiReviewedAt: reviewedAt },
+      const { reviewedAt } = await registerHumanReview(container.prisma, {
+        contentId: request.params.contentId,
+        organizationId: auth.organizationId,
       });
 
       await recordAudit(container.prisma, {
@@ -237,7 +218,7 @@ export async function registerAiRoutes(
         actorUserId: auth.userId,
         action: 'ai.human_review',
         entityType: 'Content',
-        entityId: content.id,
+        entityId: request.params.contentId,
         correlationId: request.correlationId,
       });
 

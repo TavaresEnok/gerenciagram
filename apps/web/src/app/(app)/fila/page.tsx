@@ -205,6 +205,13 @@ function CartaoPublicacao({
   const [processando, setProcessando] = useState(false);
   const [duplicando, setDuplicando] = useState(false);
   const [novaData, setNovaData] = useState('');
+  /**
+   * Quando a API recusa o retry porque há destinos com resultado remoto
+   * DESCONHECIDO, a decisão de reenviar é da pessoa — com o risco na tela.
+   */
+  const [confirmarReenvio, setConfirmarReenvio] = useState<{
+    contas: string[];
+  } | null>(null);
 
   /**
    * Reaproveita a publicação numa nova data, nas MESMAS contas.
@@ -256,18 +263,32 @@ function CartaoPublicacao({
     }
   }
 
-  async function executar(acao: 'retry' | 'cancel') {
+  async function executar(acao: 'retry' | 'cancel', reconheceuRisco = false) {
     setProcessando(true);
 
     try {
       if (acao === 'retry') {
-        const resultado = await api<{ retried: number }>(
+        const resultado = await api<{ retried: number; resumedVerification: number }>(
           `/v1/posts/${publicacao.id}/retry`,
-          { method: 'POST', body: {} },
+          {
+            method: 'POST',
+            body: reconheceuRisco ? { acknowledgeUnverified: true } : {},
+          },
         );
+        setConfirmarReenvio(null);
         aoAvisar({
           tom: 'sucesso',
-          texto: `${resultado.retried} destino(s) reenfileirado(s). As contas já publicadas não foram tocadas.`,
+          texto:
+            [
+              resultado.retried > 0
+                ? `${resultado.retried} destino(s) reenfileirado(s)`
+                : null,
+              resultado.resumedVerification > 0
+                ? `${resultado.resumedVerification} destino(s) voltaram à verificação (sem novo envio)`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(' · ') + '. As contas já publicadas não foram tocadas.',
         });
       } else {
         const resultado = await api<{ cancelled: number }>(
@@ -282,10 +303,21 @@ function CartaoPublicacao({
 
       aoMudar();
     } catch (caught) {
-      aoAvisar({
-        tom: 'erro',
-        texto: caught instanceof ApiError ? caught.message : 'Não foi possível concluir a ação.',
-      });
+      // Resultado remoto desconhecido: a API exige decisão explícita com o
+      // risco declarado antes de reenviar uma criação que pode ter saído.
+      const detalhes =
+        caught instanceof ApiError
+          ? (caught.details as { code?: string; destinos?: Array<{ conta: string }> } | undefined)
+          : undefined;
+
+      if (detalhes?.code === 'UNVERIFIED_RETRY_REQUIRES_ACK') {
+        setConfirmarReenvio({ contas: (detalhes.destinos ?? []).map((item) => item.conta) });
+      } else {
+        aoAvisar({
+          tom: 'erro',
+          texto: caught instanceof ApiError ? caught.message : 'Não foi possível concluir a ação.',
+        });
+      }
     } finally {
       setProcessando(false);
     }
@@ -375,6 +407,39 @@ function CartaoPublicacao({
             </Botao>
             <Botao variante="primaria" carregando={processando} onClick={() => void duplicar()}>
               Duplicar
+            </Botao>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        aberto={confirmarReenvio !== null}
+        aoFechar={() => setConfirmarReenvio(null)}
+        titulo="Resultado remoto desconhecido"
+        largura="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-suave">
+            Em {confirmarReenvio?.contas.map((conta) => `"${conta}"`).join(', ') || 'algumas contas'},
+            o envio <strong>chegou a sair</strong> para a plataforma, mas não foi possível confirmar
+            se a publicação aconteceu. Reenviar agora pode criar{' '}
+            <strong>uma publicação duplicada</strong>.
+          </p>
+          <p className="text-xs text-suave">
+            Abra a conta na plataforma e confira. Se o conteúdo <strong>não</strong> estiver lá,
+            confirme o reenvio abaixo.
+          </p>
+
+          <div className="flex justify-end gap-2">
+            <Botao variante="fantasma" onClick={() => setConfirmarReenvio(null)}>
+              Voltar
+            </Botao>
+            <Botao
+              variante="primaria"
+              carregando={processando}
+              onClick={() => void executar('retry', true)}
+            >
+              Conferi a conta — reenviar
             </Botao>
           </div>
         </div>

@@ -286,12 +286,23 @@ export async function registerPostRoutes(
           'já publicadas não são republicadas — garantido pela chave única por destino.',
         params: z.object({ postId: z.string().uuid() }),
         body: z
-          .object({ targetIds: z.array(z.string().uuid()).optional() })
+          .object({
+            targetIds: z.array(z.string().uuid()).optional(),
+            /**
+             * Confirmação HUMANA de que os destinos com resultado remoto
+             * desconhecido foram conferidos na plataforma e podem ser
+             * reenviados (aceitando o risco de duplicação). Sem ela, o
+             * reprocessamento desses destinos é recusado com
+             * UNVERIFIED_RETRY_REQUIRES_ACK.
+             */
+            acknowledgeUnverified: z.boolean().optional(),
+          })
           .optional()
           .default({}),
         response: {
           200: z.object({
             retried: z.number(),
+            resumedVerification: z.number(),
             targets: z.array(
               z.object({ accountNickname: z.string(), scheduledAt: z.string() }),
             ),
@@ -305,6 +316,7 @@ export async function registerPostRoutes(
         request.params.postId,
         request.correlationId,
         request.body?.targetIds,
+        { acknowledgeUnverified: request.body?.acknowledgeUnverified },
       ),
   );
 

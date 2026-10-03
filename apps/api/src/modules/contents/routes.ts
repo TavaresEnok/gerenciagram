@@ -129,6 +129,9 @@ export async function registerContentRoutes(
           clientId: z.string().uuid().nullable().optional(),
           campaignId: z.string().uuid().nullable().optional(),
           mediaAssetIds: z.array(z.string().uuid()).max(20).optional(),
+          // Proveniência: a interface informa quando uma sugestão de IA foi
+          // aplicada nesta edição. Um PATCH NUNCA confirma revisão humana.
+          aiGenerated: z.boolean().optional(),
         }),
         response: { 200: contentSchema },
       },

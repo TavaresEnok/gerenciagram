@@ -207,6 +207,10 @@ não implementada não ganha um adapter vazio — pedir por ela resulta em
 | **Circuit breaker** | `SocialPlatform` (banco) | Persistido, **não em memória**: o worker escala horizontalmente, e um breaker por processo abriria e fecharia de forma independente em cada réplica |
 | **Cota** | `PlatformQuotaUsage` | Reservada **antes** da chamada externa, com incremento atômico; devolvida em falha permanente. Estouro **reagenda** para depois do reset, sem gastar tentativa |
 | **Dead-letter** | `DeadLetterJob` | Job que esgota o retry vira linha visível no painel admin. Nunca some silenciosamente |
+| **Processamento remoto pendente** | `PostTarget.PROCESSING` | TikTok/YouTube/Facebook aceitam o envio e processam de forma assíncrona. "Aceito" não é "publicado": o destino fica em PROCESSING com o identificador da operação (que pode não ser o id público do post) até o job `check-remote-state` confirmar, ser rejeitado ou estourar o prazo máximo. Reagendado com `moveToDelayed`+`DelayedError` — o mecanismo do BullMQ para isto; `changeDelay` não vale em job ativo |
+| **Resultado desconhecido** | `UNVERIFIED_OUTCOME_CODES` | Criação cujo envio saiu sem confirmação NÃO é reenviada automaticamente (duplicaria). Com identificador de operação, retoma-se a verificação; sem ele, exige confirmação humana auditada |
+| **Cota por tentativa** | `PublishAttempt.externalCallStartedAt` | A reserva só é devolvida quando a chamada não saiu ou foi recusada na autenticação. Timeout depois do envio mantém a cota: a plataforma pode ter cobrado |
+| **Expurgo físico** | `Storage.deleteObject` | Retenção e exclusão LGPD removem objeto e miniatura ANTES da linha do banco, com idempotência e retomada. Bucket de mídia roda SEM versionamento, senão a exclusão vira delete marker e os bytes ficam |
 
 ### A armadilha do `NULL` em `UNIQUE`
 

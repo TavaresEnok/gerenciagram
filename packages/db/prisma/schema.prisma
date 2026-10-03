@@ -98,7 +98,11 @@ enum PostTargetStatus {
   QUEUED
   /// Worker processando agora
   PUBLISHING
-  /// Publicado com sucesso — tem remoteId
+  /// A plataforma ACEITOU o envio, mas ainda processa de forma assíncrona
+  /// (transcodificação/modação). NÃO é publicação confirmada: a confirmação
+  /// vem do job de verificação de estado remoto.
+  PROCESSING
+  /// Publicado com sucesso confirmado — tem remoteId
   PUBLISHED
   /// Esgotou as tentativas ou falhou de forma não-recuperável
   FAILED
@@ -686,6 +690,10 @@ model Content {
   /// Marcado por IA? Exige revisão humana antes de publicar (SPEC seção 6).
   aiGenerated Boolean @default(false)
   aiReviewedAt DateTime?
+  /// Hash canônico do conteúdo NO INSTANTE da revisão (texto base + variações
+  /// por rede/conta). É o que vincula a revisão à VERSÃO revisada: qualquer
+  /// alteração relevante posterior zera aiReviewedAt e exige nova revisão.
+  aiReviewHash String?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -848,9 +856,19 @@ model PostTarget {
   lastAttemptAt DateTime?
   nextRetryAt   DateTime?
 
-  /// Resultado na plataforma
+  /// Resultado na plataforma. `remoteId` é o identificador PÚBLICO do post,
+  /// gravado só quando a publicação está confirmada.
   remoteId  String?
   remoteUrl String?
+
+  /// Identificador da OPERAÇÃO/remessa assíncrona (ex.: publish_id do
+  /// TikTok). NÃO é o id público do post — no TikTok os dois são coisas
+  /// diferentes, e confundi-los produziria links e consultas quebradas.
+  remoteOperationId String?
+  /// Prazo máximo para a plataforma confirmar o processamento. Passou daqui
+  /// sem resposta, o desfecho remoto é DESCONHECIDO — o destino falha com
+  /// REMOTE_PROCESSING_TIMEOUT para conferência humana, nunca como sucesso.
+  processingDeadlineAt DateTime?
 
   errorCode    String?
   errorMessage String?

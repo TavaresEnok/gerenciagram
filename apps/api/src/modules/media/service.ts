@@ -308,7 +308,7 @@ export class MediaService {
                     deletedAt: null,
                     targets: {
                       some: {
-                        status: { in: ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING'] },
+                        status: { in: ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING', 'PROCESSING'] },
                         deletedAt: null,
                       },
                     },

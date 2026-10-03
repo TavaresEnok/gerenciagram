@@ -3,15 +3,17 @@ import {
   DEFAULT_BACKOFF,
   QuotaExceededError,
   TokenExpiredError,
+  checkRemoteJobId,
   isRetryable,
   nextRetryDelay,
   resolveVariantFor,
   type AdapterContext,
+  type CheckRemoteStatePayload,
   type PublishInput,
   type PublishTargetPayload,
 } from '@app/core';
 import { getValidCredentials, nextQuotaResetAt, releaseQuota, reserveQuota } from '@app/platform';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import { Prisma } from '@app/db';
 import { PassThrough } from 'node:stream';
 import type { WorkerContainer } from '../container.js';
@@ -71,9 +73,27 @@ const targetInclude = {
 
 type LoadedTarget = Prisma.PostTargetGetPayload<{ include: typeof targetInclude }>;
 
+/**
+ * Agenda a verificação do estado remoto. Injetada pelo `main` (que é dono da
+ * fila) para o processador não depender de BullMQ diretamente. Nos testes,
+ * basta um gravador de chamadas.
+ *
+ * A ausência dela NÃO perde a verificação: o varredor
+ * `reconcileProcessingTargets` recoloca na fila qualquer destino PROCESSING
+ * cujo job tenha se perdido.
+ */
+export type ScheduleRemoteStateCheck = (
+  payload: CheckRemoteStatePayload,
+  delayMs: number,
+) => Promise<void>;
+
+/** Desfecho do envio: confirmado na hora ou aceito para processamento remoto. */
+export type PublishOutcome = 'PUBLISHED' | 'PROCESSING';
+
 export async function processPublishTarget(
   container: WorkerContainer,
   job: Job<PublishTargetPayload>,
+  scheduleRemoteStateCheck?: ScheduleRemoteStateCheck,
 ): Promise<void> {
   const { postTargetId, correlationId } = job.data;
   const log = container.logger.child({ correlationId, postTargetId, jobId: job.id });
@@ -141,7 +161,7 @@ export async function processPublishTarget(
   const ctx = adapterContext(container, correlationId, 120_000);
 
   try {
-    await publishNow(container, target, ctx, log, attempt.id);
+    const outcome = await publishNow(container, target, ctx, log, attempt.id);
 
     await container.prisma.publishAttempt.update({
       where: { id: attempt.id },
@@ -153,8 +173,36 @@ export async function processPublishTarget(
     });
 
     await container.circuit.onSuccess(target.platform);
+
+    if (outcome === 'PROCESSING') {
+      /**
+       * A plataforma aceitou o envio mas ainda processa (transcodificação).
+       * O destino ficou PROCESSING: quem confirma é o job de verificação,
+       * reagendado até a confirmação ou o prazo máximo. Se esta enfileiração
+       * falhar ou o worker cair antes dela, o varredor de destinos
+       * PROCESSING recoloca o job — o upload NUNCA é refeito.
+       */
+      await container.prisma.postTarget.update({
+        where: { id: target.id },
+        data: { jobId: checkRemoteJobId(postTargetId) },
+      });
+
+      if (scheduleRemoteStateCheck) {
+        await scheduleRemoteStateCheck(
+          {
+            postTargetId,
+            organizationId: target.organizationId,
+            attempt: 0,
+            correlationId,
+          },
+          container.env.REMOTE_STATE_FIRST_POLL_MS,
+        );
+      } else {
+        log.warn('sem enfileirador de verificação — o varredor recolocará o job');
+      }
+    }
   } catch (error) {
-    await container.prisma.publishAttempt.update({
+    const ultimaTentativa = await container.prisma.publishAttempt.update({
       where: { id: attempt.id },
       data: {
         success: false,
@@ -165,7 +213,18 @@ export async function processPublishTarget(
       },
     });
 
-    await handleFailure(container, target, error, attemptNumber, job, log);
+    await handleFailure(
+      container,
+      target,
+      error,
+      attemptNumber,
+      job,
+      log,
+      // A chamada à plataforma chegou a sair? É o que decide se a cota pode
+      // ser devolvida quando a falha vira definitiva: depois do envio, o
+      // consumo remoto pode já ter acontecido — um timeout NÃO devolve cota.
+      ultimaTentativa.externalCallStartedAt !== null,
+    );
   } finally {
     await recomputePostStatus(container.prisma, target.postId);
   }
@@ -181,7 +240,7 @@ async function publishNow(
   ctx: AdapterContext,
   log: WorkerContainer['logger'],
   attemptId: string,
-): Promise<void> {
+): Promise<PublishOutcome> {
   const post = target.post;
   if (!post) throw new Error('Publicação não encontrada para este destino.');
 
@@ -313,6 +372,34 @@ async function publishNow(
 
   const result = await adapter.publisher.publish(credentials, input, ctx);
 
+  /**
+   * Envio aceito NÃO é publicação concluída. TikTok, YouTube e Facebook
+   * processam o vídeo de forma assíncrona e podem rejeitar DEPOIS de aceitar.
+   * `processingPending` marca exatamente esse caso: o destino vai para
+   * PROCESSING com o identificador da OPERAÇÃO (que pode não ser o id público
+   * do post — no TikTok o publish_id não é), sem notificação de sucesso e sem
+   * `remoteId`, até a confirmação do job de verificação.
+   */
+  if (result.processingPending) {
+    await container.prisma.postTarget.update({
+      where: { id: target.id },
+      data: {
+        status: 'PROCESSING',
+        remoteOperationId: result.remoteId,
+        processingDeadlineAt: new Date(Date.now() + container.env.REMOTE_STATE_MAX_WINDOW_MS),
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
+
+    log.info(
+      { remoteOperationId: result.remoteId },
+      'envio aceito pela plataforma — aguardando confirmação do processamento remoto',
+    );
+
+    return 'PROCESSING';
+  }
+
   await container.prisma.$transaction([
     container.prisma.postTarget.update({
       where: { id: target.id },
@@ -346,6 +433,8 @@ async function publishNow(
     actionUrl: `/fila?post=${target.postId}`,
     metadata: { postTargetId: target.id, remoteId: result.remoteId },
   });
+
+  return 'PUBLISHED';
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +446,7 @@ async function handleFailure(
   attemptNumber: number,
   job: Job<PublishTargetPayload>,
   log: WorkerContainer['logger'],
+  externalCallStarted: boolean,
 ): Promise<void> {
   const code = errorCodeOf(error);
   const message = messageOf(error);
@@ -379,7 +469,15 @@ async function handleFailure(
       },
     });
 
-    await job.changeDelay(Math.max(1000, resetsAt.getTime() - Date.now()));
+    /**
+     * `job.changeDelay` só vale para job no estado DELAYED — num job ATIVO
+     * (este, em processamento) o BullMQ lança JobNotInState e a fila
+     * re-tentaria pelo backoff de erro, no horário errado e gastando
+     * tentativa. O mecanismo correto do BullMQ 5 é mover o próprio job para
+     * delayed (com o token do lock, sem consumir tentativa) e encerrar o
+     * processamento com DelayedError.
+     */
+    await job.moveToDelayed(Math.max(Date.now() + 1000, resetsAt.getTime()), job.token);
 
     log.warn({ resetsAt }, 'cota atingida — destino reagendado para depois do reset');
 
@@ -390,7 +488,7 @@ async function handleFailure(
       body: `${message} A publicação foi reagendada automaticamente.`,
       actionUrl: `/fila?post=${target.postId}`,
     });
-    return;
+    throw new DelayedError();
   }
 
   // --- Circuito aberto: espera a janela, sem gastar tentativa -------------
@@ -409,9 +507,9 @@ async function handleFailure(
       },
     });
 
-    await job.changeDelay(error.retryAfterMs);
+    await job.moveToDelayed(retryAt.getTime(), job.token);
     log.warn({ retryAt }, 'circuito aberto — destino aguardando a plataforma voltar');
-    return;
+    throw new DelayedError();
   }
 
   await container.circuit.onFailure(target.platform);
@@ -460,13 +558,26 @@ async function handleFailure(
     },
   });
 
-  // Devolve a cota reservada: a publicação não aconteceu, e manter a reserva
-  // consumiria o limite do dia inteiro à toa.
-  await releaseQuota(container.prisma, {
-    platform: target.platform,
-    socialAccountId: target.socialAccountId,
-    at: new Date(),
-  });
+  // Devolve a cota reservada APENAS quando a falha não pôde ter consumido a
+  // janela remota: a chamada nunca saiu (validação, circuito, cota), ou a
+  // plataforma recusou na AUTENTICAÇÃO (401 sem aceitar nada do upload).
+  //
+  // Timeout/5xx DEPOIS do envio é o caso traiçoeiro: o upload pode ter sido
+  // contado plataforma adentro, e devolver a reserva "porque falhou"
+  // estouraria o limite real do dia (ex.: 100 uploads/dia do YouTube) quando
+  // a publicação for refeita.
+  if (externalCallStarted && !(error instanceof TokenExpiredError)) {
+    log.warn(
+      { code },
+      'falha DEPOIS do envio à plataforma — cota mantida, pois o consumo remoto já pode existir',
+    );
+  } else {
+    await releaseQuota(container.prisma, {
+      platform: target.platform,
+      socialAccountId: target.socialAccountId,
+      at: new Date(),
+    });
+  }
 
   // Dead-letter: jobs que esgotaram o retry ficam visíveis no painel admin,
   // nunca somem silenciosamente (SPEC seção 12).

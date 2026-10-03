@@ -1,3 +1,5 @@
+import { getPlatformDefinition } from '@app/core';
+import { quotaWindowFor } from '@app/platform';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { recoverStuckPublishing } from './maintenance.js';
 import { createHarness, createScenario, type TestHarness } from '../test/harness.js';
@@ -94,13 +96,19 @@ describe('caiu ANTES de falar com a plataforma', () => {
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
 
+    // A janela de cota é derivada da regra oficial da plataforma — fixar a
+    // meia-noite UTC falhava em corridas que cruzavam o horário de reset
+    // (YouTube: meia-noite no Pacífico), dependendo da hora do teste.
+    const regra = getPlatformDefinition('YOUTUBE').quotaRules.rules[0]!;
+    const janela = quotaWindowFor(regra, new Date());
+
     await harness.prisma.platformQuotaUsage.create({
       data: {
         platform: 'YOUTUBE',
         scopeKey: 'APP',
-        windowDate: new Date(new Date().toISOString().slice(0, 10)),
-        windowStart: new Date(Date.now() - 3_600_000),
-        windowEnd: new Date(Date.now() + 3_600_000),
+        windowDate: janela.windowDate,
+        windowStart: janela.windowStart,
+        windowEnd: janela.windowEnd,
         count: 5,
         units: 5,
       },

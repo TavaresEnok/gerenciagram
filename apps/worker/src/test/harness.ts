@@ -7,6 +7,7 @@ import {
   type PlatformKey,
   type PublishResult,
   type RemoteComment,
+  type RemotePostState,
   type SocialMediaAdapter,
 } from '@app/core';
 import { PrismaClient } from '@app/db';
@@ -29,6 +30,13 @@ export interface FakePublisherBehavior {
   responses: Array<PublishResult | Error>;
   /** Chamadas efetivamente feitas — o contador de publicação duplicada. */
   calls: Array<{ idempotencyKey: string; title?: string | undefined; body: string }>;
+  /**
+   * Fila de estados remotos devolvidos por `fetchRemoteState`; cada consulta
+   * consome o próximo. Vazia = READY imediato (comportamento histórico).
+   */
+  remoteStates: Array<RemotePostState | Error>;
+  /** Identificadores de operação consultados, na ordem. */
+  stateCalls: string[];
   /** Comentários que a rede devolve, por id remoto da publicação. */
   comments: Map<string, RemoteComment[] | Error>;
   /** Publicações cujos comentários foram buscados, na ordem. */
@@ -66,7 +74,13 @@ export function createFakeAdapter(
         if (next instanceof Error) throw next;
         return next;
       },
-      fetchRemoteState: async (_c, remoteId) => ({ remoteId, status: 'READY' as const }),
+      fetchRemoteState: async (_c, remoteId) => {
+        behavior.stateCalls.push(remoteId);
+
+        const next = behavior.remoteStates.shift();
+        if (next instanceof Error) throw next;
+        return next ?? { remoteId, status: 'READY' as const };
+      },
       deletePost: async () => undefined,
       fetchDynamicFieldOptions: async () => [],
     },
@@ -87,6 +101,11 @@ export interface TestHarness {
   container: WorkerContainer;
   prisma: PrismaClient;
   behavior: FakePublisherBehavior;
+  /**
+   * Espelho do que o storage mock recebeu: os testes de expurgo provam por
+   * aqui que a exclusão chegou ao bucket, e injetam falhas retomáveis.
+   */
+  storageState: { deletedKeys: string[]; failNextDeletes: Set<string> };
   cleanup: () => Promise<void>;
 }
 
@@ -99,6 +118,8 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
   const behavior: FakePublisherBehavior = {
     responses: [],
     calls: [],
+    remoteStates: [],
+    stateCalls: [],
     comments: new Map(),
     commentCalls: [],
   };
@@ -111,6 +132,17 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
   };
 
   const keyring = buildKeyring(Buffer.alloc(32, 7).toString('base64'));
+
+  // Espelho do storage falso: permite provar que o expurgo alcançou o bucket
+  // e injetar uma falha retomável ("objeto ausente é sucesso idempotente;
+  // erro de rede é refeito na próxima rodada").
+  const storageState = { deletedKeys: [] as string[], failNextDeletes: new Set<string>() };
+  const deleteObject = async (key: string): Promise<void> => {
+    if (storageState.failNextDeletes.delete(key)) {
+      throw new Error(`falha injetada ao apagar ${key}`);
+    }
+    storageState.deletedKeys.push(key);
+  };
 
   const container: WorkerContainer = {
     env: {
@@ -135,6 +167,8 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
       FFPROBE_PATH: 'ffprobe',
       PUBLISH_CONCURRENCY: 5,
       MEDIA_CONCURRENCY: 2,
+      REMOTE_STATE_FIRST_POLL_MS: 30_000,
+      REMOTE_STATE_MAX_WINDOW_MS: 24 * 60 * 60_000,
       YOUTUBE_CLIENT_ID: 'teste',
       YOUTUBE_CLIENT_SECRET: 'teste',
     } as WorkerContainer['env'],
@@ -150,6 +184,7 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
       },
       getObjectBuffer: async () => Buffer.from('conteudo-de-teste'),
       putObject: async () => undefined,
+      deleteObject,
       // URL fixa e claramente falsa: nenhum teste aqui chega a buscá-la, e um
       // endereço que parecesse real esconderia um teste que a usasse por engano.
       getSignedDownloadUrl: async (key: string) =>
@@ -178,6 +213,7 @@ export async function createHarness(platform: PlatformKey = 'YOUTUBE'): Promise<
     container,
     prisma,
     behavior,
+    storageState,
     cleanup: async () => {
       await prisma.$disconnect();
     },
@@ -357,13 +393,20 @@ export async function createScenario(
   };
 }
 
-/** Job do BullMQ o suficiente para o processador funcionar. */
+/**
+ * Job do BullMQ o suficiente para o processador de publicação.
+ *
+ * Não reproduz a máquina de estados do BullMQ DE PROPÓSITO: `changeDelay`
+ * ausente faz qualquer regressão ao mecanismo antigo falhar na hora (o
+ * método só vale para job DELAYED — num job ativo o BullMQ real lança
+ * JobNotInState). A prova de que o reagendamento funciona de verdade fica
+ * no teste de integração com Queue/Worker reais, não neste dublê.
+ */
 export function fakeJob(postTargetId: string, organizationId: string): Job {
-  let delay = 0;
-
   return {
     id: `publish:${postTargetId}`,
     name: 'publish-target',
+    token: 'token-de-teste',
     data: {
       postTargetId,
       organizationId,
@@ -373,9 +416,54 @@ export function fakeJob(postTargetId: string, organizationId: string): Job {
     },
     attemptsMade: 0,
     opts: { attempts: 5 },
-    changeDelay: async (value: number) => {
-      delay = value;
+    moveToDelayed: async (_timestamp: number, token?: string) => {
+      if (token !== 'token-de-teste') throw new Error('lock inválido');
     },
-    getDelay: () => delay,
   } as unknown as Job;
+}
+
+export interface FakeCheckJob {
+  job: Job;
+  /** Instantes para os quais o job foi reagendado via moveToDelayed. */
+  reagendamentos: number[];
+  /** Sequência de `attempt` gravada pelo processador via updateData. */
+  tentativas: number[];
+}
+
+/**
+ * Job de verificação de estado remoto. `moveToDelayed`/`updateData` só
+ * registram: quem decide SE o reagendamento funciona de verdade é o teste de
+ * integração com o BullMQ real, não este dublê.
+ */
+export function fakeCheckJob(
+  postTargetId: string,
+  organizationId: string,
+  attempt = 0,
+): FakeCheckJob {
+  const reagendamentos: number[] = [];
+  const tentativas: number[] = [];
+
+  const job = {
+    id: `check-remote:${postTargetId}`,
+    name: 'check-remote-state',
+    token: 'token-de-teste',
+    data: {
+      postTargetId,
+      organizationId,
+      attempt,
+      correlationId: `teste-${randomUUID().slice(0, 8)}`,
+    },
+    attemptsMade: 0,
+    opts: { attempts: 10 },
+    updateData: async (data: { attempt: number }) => {
+      tentativas.push(data.attempt);
+      (job as { data: unknown }).data = data;
+    },
+    moveToDelayed: async (timestamp: number, token?: string) => {
+      if (token !== 'token-de-teste') throw new Error('lock inválido');
+      reagendamentos.push(timestamp);
+    },
+  } as unknown as Job;
+
+  return { job, reagendamentos, tentativas };
 }

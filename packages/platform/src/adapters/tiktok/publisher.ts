@@ -514,7 +514,10 @@ export function interpretarStatus(remoteId: string, resposta: StatusResponse): R
 
   if (status === 'PUBLISH_COMPLETE') {
     return {
-      remoteId,
+      // Só no PUBLISH_COMPLETE o TikTok devolve o id PÚBLICO do post. Sem
+      // ele, o identificador continua sendo o publish_id — que NÃO é o post
+      // e produziria links quebrados se fosse tratado como tal.
+      remoteId: postId ?? remoteId,
       status: 'READY',
       // A URL só existe quando o TikTok devolve o id público do post. Montar
       // um endereço a partir do publish_id daria um link quebrado.

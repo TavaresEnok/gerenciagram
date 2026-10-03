@@ -1,4 +1,5 @@
 import { parsePreviousKeys } from '@app/platform';
+import { DEFAULT_REMOTE_STATE_WINDOW_MS } from '@app/core';
 import { z } from 'zod';
 
 /**
@@ -78,6 +79,20 @@ const schema = z.object({
   /** Quantos jobs de publicação em paralelo por processo. */
   PUBLISH_CONCURRENCY: z.coerce.number().int().positive().default(5),
   MEDIA_CONCURRENCY: z.coerce.number().int().positive().default(2),
+
+  // --- Verificação de estado remoto (processamento assíncrono) -------------
+  /** Primeira consulta ao status remoto após a plataforma aceitar o envio. */
+  REMOTE_STATE_FIRST_POLL_MS: z.coerce.number().int().positive().default(30_000),
+  /**
+   * Prazo máximo de espera pela confirmação da plataforma. Passado daqui sem
+   * resposta, o desfecho remoto é DESCONHECIDO — o destino é marcado para
+   * conferência humana, nunca como publicado.
+   */
+  REMOTE_STATE_MAX_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_REMOTE_STATE_WINDOW_MS),
 
   // --- Alertas operacionais (SPEC seção 13) --------------------------------
   // Limiares configuráveis, nunca fixos no código. Os padrões abaixo são

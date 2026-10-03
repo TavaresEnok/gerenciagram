@@ -337,7 +337,7 @@ export class PostQueryService {
         total: targets.length,
         published: targets.filter((t) => t.status === 'PUBLISHED').length,
         failed: targets.filter((t) => t.status === 'FAILED').length,
-        pending: targets.filter((t) => ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING'].includes(t.status)).length,
+        pending: targets.filter((t) => ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING', 'PROCESSING'].includes(t.status)).length,
         cancelled: targets.filter((t) => t.status === 'CANCELLED').length,
       },
     };

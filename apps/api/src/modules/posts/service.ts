@@ -1,11 +1,15 @@
 import {
   ConflictError,
+  DEFAULT_REMOTE_STATE_WINDOW_MS,
+  JOB_CHECK_REMOTE_STATE,
   JOB_PUBLISH_TARGET,
   NotFoundError,
   PLATFORM_REGISTRY,
+  UNVERIFIED_OUTCOME_CODES,
   ValidationError,
   applyStaggerDelay,
   buildTargetIdempotencyKey,
+  checkRemoteJobId,
   formatInTimezone,
   localIsoToUtc,
   parseSlots,
@@ -135,6 +139,9 @@ export class PostService {
         platformFields: variant.platformFields,
         media: content.media,
         scheduledAt: schedules.get(account.accountId)?.scheduledAt ?? null,
+        // A mesma regra do worker, antecipada para a tela: conteúdo de IA
+        // sem revisão não pode ser agendado.
+        aiNeedsReview: content.aiGenerated && content.aiReviewedAt === null,
       };
     });
 
@@ -594,13 +601,29 @@ export class PostService {
    * Cenário obrigatório da SPEC seção 21: num grupo de 20 contas em que 3
    * falham, "tentar novamente" toca só nas 3 — as 17 publicadas não são
    * republicadas, garantido pelo filtro de status e pela UNIQUE do destino.
+   *
+   * Resultado DESCONHECIDO é tratado à parte: quando a criação chegou a sair
+   * (ou pode ter saído) sem confirmação, reenviar às cegas publicaria duas
+   * vezes. O que se faz depende do que sobrou da tentativa:
+   *
+   *  - há identificador da operação remota (REMOTE_PROCESSING_TIMEOUT e
+   *    afins): NÃO se recria nada — retoma-se a VERIFICAÇÃO do estado remoto,
+   *    que confirma ou conclui o destino sem novo upload;
+   *  - não há identificador (PUBLISH_INTERRUPTED_UNVERIFIED): só uma pessoa
+   *    pode decidir reenviar, com o risco declarado — por isso o retry exige
+   *    `acknowledgeUnverified`, e a concordância vai para a auditoria.
    */
   async retryFailed(
     auth: AuthContext,
     postId: string,
     correlationId: string,
     onlyTargetIds?: string[],
-  ): Promise<{ retried: number; targets: Array<{ accountNickname: string; scheduledAt: string }> }> {
+    options?: { acknowledgeUnverified?: boolean },
+  ): Promise<{
+    retried: number;
+    resumedVerification: number;
+    targets: Array<{ accountNickname: string; scheduledAt: string }>;
+  }> {
     const post = await this.loadPost(auth, postId);
 
     const failed = post.targets.filter(
@@ -614,24 +637,128 @@ export class PostService {
       throw new ValidationError('Não há destinos com falha para reprocessar nesta publicação.');
     }
 
+    /**
+     * Destinos com verificação retomável têm o identificador da operação
+     * remota — a consulta ao estado substitui o reenvio. Os demais códigos
+     * de resultado desconhecido (sem identificador, ex.: worker morto no
+     * meio do upload) só voltam à fila por decisão explícita.
+     */
+    const COM_VERIFICACAO_RETROMAVEL = new Set([
+      'REMOTE_PROCESSING_TIMEOUT',
+      'REMOTE_STATE_CHECK_FAILED',
+    ]);
+
+    const retomavel = failed.filter(
+      (target) =>
+        target.errorCode !== null &&
+        COM_VERIFICACAO_RETROMAVEL.has(target.errorCode) &&
+        target.remoteOperationId !== null,
+    );
+    const inconclusivo = failed.filter(
+      (target) =>
+        target.errorCode !== null &&
+        UNVERIFIED_OUTCOME_CODES.has(target.errorCode) &&
+        !retomavel.includes(target),
+    );
+    const confirmado = failed.filter(
+      (target) => !retomavel.includes(target) && !inconclusivo.includes(target),
+    );
+
+    if (inconclusivo.length > 0 && options?.acknowledgeUnverified !== true) {
+      throw new ValidationError(
+        `${inconclusivo.length} destino(s) tiveram resultado DESCONHECIDO: o envio chegou a sair ` +
+          'e não foi possível confirmar se a publicação aconteceu. Reenviar às cegas pode ' +
+          'publicar o mesmo conteúdo duas vezes. Confira a conta na plataforma e, se ela não ' +
+          'tiver saído, repita a operação confirmando que entende o risco.',
+        {
+          code: 'UNVERIFIED_RETRY_REQUIRES_ACK',
+          destinos: inconclusivo.map((target) => ({
+            targetId: target.id,
+            conta: target.socialAccount.nickname,
+            erro: target.errorCode,
+          })),
+        },
+      );
+    }
+
     const now = new Date();
 
-    await this.container.prisma.postTarget.updateMany({
-      where: { id: { in: failed.map((target) => target.id) } },
-      data: {
-        status: 'SCHEDULED',
-        scheduledAt: now,
-        // Zera o contador: é uma nova rodada pedida por uma pessoa, não a
-        // continuação do retry automático que já esgotou.
-        attempts: 0,
-        nextRetryAt: null,
-        errorCode: null,
-        errorMessage: null,
-        errorPermanent: false,
-      },
-    });
+    // Destinos com falha confirmada voltam à fila de publicação.
+    if (confirmado.length > 0) {
+      await this.container.prisma.postTarget.updateMany({
+        where: { id: { in: confirmado.map((target) => target.id) } },
+        data: {
+          status: 'SCHEDULED',
+          scheduledAt: now,
+          // Zera o contador: é uma nova rodada pedida por uma pessoa, não a
+          // continuação do retry automático que já esgotou.
+          attempts: 0,
+          nextRetryAt: null,
+          errorCode: null,
+          errorMessage: null,
+          errorPermanent: false,
+          remoteOperationId: null,
+          processingDeadlineAt: null,
+        },
+      });
+      await this.enqueueTargets(postId, correlationId, confirmado.map((target) => target.id));
+    }
 
-    await this.enqueueTargets(postId, correlationId, failed.map((target) => target.id));
+    // Destinos inconclusivos CONFIRMADOS pela pessoa também voltam à fila —
+    // a concordância fica registrada na auditoria abaixo.
+    if (inconclusivo.length > 0) {
+      await this.container.prisma.postTarget.updateMany({
+        where: { id: { in: inconclusivo.map((target) => target.id) } },
+        data: {
+          status: 'SCHEDULED',
+          scheduledAt: now,
+          attempts: 0,
+          nextRetryAt: null,
+          errorCode: null,
+          errorMessage: null,
+          errorPermanent: false,
+          remoteOperationId: null,
+          processingDeadlineAt: null,
+        },
+      });
+      await this.enqueueTargets(postId, correlationId, inconclusivo.map((target) => target.id));
+    }
+
+    // Destinos com verificação retomável voltam a PROCESSING com novo prazo
+    // e NENHUM upload novo: só a consulta ao estado remoto roda de novo.
+    for (const target of retomavel) {
+      await this.container.prisma.postTarget.update({
+        where: { id: target.id },
+        data: {
+          status: 'PROCESSING',
+          processingDeadlineAt: new Date(now.getTime() + DEFAULT_REMOTE_STATE_WINDOW_MS),
+          nextRetryAt: null,
+          errorCode: null,
+          errorMessage: null,
+          errorPermanent: false,
+          jobId: checkRemoteJobId(target.id),
+        },
+      });
+
+      await this.container.queues.publish.add(
+        JOB_CHECK_REMOTE_STATE,
+        {
+          postTargetId: target.id,
+          organizationId: target.organizationId,
+          attempt: 0,
+          correlationId,
+        },
+        {
+          jobId: checkRemoteJobId(target.id),
+          delay: 0,
+          attempts: 10,
+          backoff: { type: 'exponential', delay: 30_000 },
+          removeOnComplete: true,
+        },
+      );
+    }
+
+    await this.recomputePostStatus(postId);
 
     await recordAudit(this.container.prisma, {
       organizationId: auth.organizationId,
@@ -639,13 +766,18 @@ export class PostService {
       action: 'post.retry_failed',
       entityType: 'Post',
       entityId: postId,
-      changes: { destinos: failed.length },
+      changes: {
+        destinos: confirmado.length + inconclusivo.length,
+        verificacoesRetomadas: retomavel.length,
+        ...(inconclusivo.length > 0 ? { reconheceuResultadoDesconhecido: true } : {}),
+      },
       correlationId,
     });
 
     return {
-      retried: failed.length,
-      targets: failed.map((target) => ({
+      retried: confirmado.length + inconclusivo.length,
+      resumedVerification: retomavel.length,
+      targets: confirmado.map((target) => ({
         accountNickname: target.socialAccount.nickname,
         scheduledAt: now.toISOString(),
       })),
@@ -1084,10 +1216,13 @@ export class PostService {
     const failed = counts['FAILED'] ?? 0;
     const cancelled = counts['CANCELLED'] ?? 0;
     const publishing = counts['PUBLISHING'] ?? 0;
+    // PROCESSING = a plataforma aceitou mas ainda não confirmou: o post
+    // continua "em publicação" até o desfecho remoto.
+    const processing = counts['PROCESSING'] ?? 0;
     const skipped = counts['SKIPPED'] ?? 0;
 
     let status: string;
-    if (publishing > 0) status = 'PUBLISHING';
+    if (publishing + processing > 0) status = 'PUBLISHING';
     else if (published === total) status = 'PUBLISHED';
     else if (cancelled === total) status = 'CANCELLED';
     else if (failed + skipped === total) status = 'FAILED';

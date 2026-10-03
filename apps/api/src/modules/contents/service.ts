@@ -7,6 +7,7 @@ import {
   type PlatformKey,
 } from '@app/core';
 import type { Container } from '../../container.js';
+import { aiContentHash } from '../../lib/ai-review.js';
 import { recordAudit } from '../../lib/audit.js';
 import type { AuthContext } from '../../plugins/auth.js';
 
@@ -85,6 +86,12 @@ export class ContentService {
       clientId?: string;
       campaignId?: string;
       mediaAssetIds?: string[];
+      /**
+       * Proveniência INTERNA: a interface marca isto quando o texto veio de
+       * uma sugestão de IA aplicada no compositor. Não tentamos adivinhar se
+       * um texto externo "parece de IA" — a garantia do produto é sobre as
+       * ações rastreáveis do próprio produto (SPEC seção 6).
+       */
       aiGenerated?: boolean;
     },
     correlationId: string,
@@ -137,6 +144,12 @@ export class ContentService {
       clientId?: string | null;
       campaignId?: string | null;
       mediaAssetIds?: string[];
+      /**
+       * A interface informa quando uma sugestão de IA foi APLICADA na edição
+       * (ou quando o texto passou a vir de IA). Um conteúdo humano ao qual se
+       * aplica uma sugestão vira conteúdo de IA e passa a exigir revisão.
+       */
+      aiGenerated?: boolean;
     },
     correlationId: string,
   ): Promise<ContentView> {
@@ -144,6 +157,36 @@ export class ContentService {
 
     if (input.clientId) this.assertClientScope(auth, input.clientId);
     if (input.mediaAssetIds) await this.assertMediaExists(auth, input.mediaAssetIds);
+
+    /**
+     * A revisão humana vale para a VERSÃO revisada, não para o rótulo.
+     * Qualquer mudança no que vai para a rede (texto, hashtags, mídia) depois
+     * da aprovação a invalida — um PATCH ou autosave NUNCA confirma revisão.
+     * A revisão é uma ação explícita (POST /contents/:id/ai-review), vinculada
+     * ao hash da versão revisada.
+     */
+    const aiEfetivo = input.aiGenerated ?? content.aiGenerated;
+
+    let textoMudou = false;
+    if (aiEfetivo) {
+      if (input.title !== undefined && (input.title ?? null) !== content.title) textoMudou = true;
+      if (input.body !== undefined && input.body !== content.body) textoMudou = true;
+      if (input.hashtags !== undefined && !mesmasTags(input.hashtags, content.hashtags)) {
+        textoMudou = true;
+      }
+    }
+
+    const midiaMudou =
+      aiEfetivo &&
+      input.mediaAssetIds !== undefined &&
+      (input.mediaAssetIds.length !== content.mediaAssetIds.length ||
+        input.mediaAssetIds.some((id, index) => id !== content.mediaAssetIds[index]));
+
+    // Aplicar IA num conteúdo que não era de IA também inicia (ou reinicia) o
+    // ciclo de revisão.
+    const virouIa = input.aiGenerated === true && !content.aiGenerated;
+
+    const invalidarRevisao = aiEfetivo && aiReviewed(content) && (textoMudou || midiaMudou || virouIa);
 
     await this.container.prisma.$transaction(async (tx) => {
       await tx.content.update({
@@ -154,11 +197,8 @@ export class ContentService {
           ...(input.hashtags ? { hashtags: input.hashtags } : {}),
           ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
           ...(input.campaignId !== undefined ? { campaignId: input.campaignId } : {}),
-          // Editar conteúdo gerado por IA marca a revisão humana exigida pela
-          // SPEC seção 6 antes de qualquer publicação.
-          ...(content.aiGenerated && content.aiReviewedAt === null
-            ? { aiReviewedAt: new Date() }
-            : {}),
+          ...(input.aiGenerated !== undefined ? { aiGenerated: input.aiGenerated } : {}),
+          ...(invalidarRevisao ? { aiReviewedAt: null, aiReviewHash: null } : {}),
         },
       });
 
@@ -198,7 +238,27 @@ export class ContentService {
     variants: VariantInput[],
     correlationId: string,
   ): Promise<ContentView> {
-    await this.loadOwned(auth, contentId);
+    const atual = await this.container.prisma.content.findFirst({
+      where: { id: contentId, organizationId: auth.organizationId, deletedAt: null },
+      select: {
+        id: true,
+        clientId: true,
+        aiGenerated: true,
+        aiReviewedAt: true,
+        variants: {
+          select: {
+            platform: true,
+            socialAccountId: true,
+            title: true,
+            body: true,
+            hashtags: true,
+            platformFields: true,
+          },
+        },
+      },
+    });
+    if (!atual) throw new NotFoundError('Conteúdo', contentId);
+    if (atual.clientId) this.assertClientScope(auth, atual.clientId);
 
     // Overrides precisam apontar para contas reais da organização, senão
     // ficariam órfãos e nunca seriam aplicados.
@@ -238,6 +298,38 @@ export class ContentService {
       }
     }
 
+    /**
+     * Variações são parte do que vai para a rede: mudar legenda/título/campos
+     * de uma variação DEPOIS da revisão de IA invalida a revisão (a pessoa
+     * aprovou outro texto). A comparação de hash impede o falso reset: o
+     * compositor reenvia as mesmas variações a cada preview, e um PUT
+     * idêntico não pode exigir revisão nova (senão ela seria impossível).
+     */
+    const hashAntes = aiContentHash(
+      { title: null, body: '', hashtags: [] },
+      atual.variants.map((variant) => ({
+        platform: variant.platform,
+        socialAccountId: variant.socialAccountId,
+        title: variant.title,
+        body: variant.body,
+        hashtags: variant.hashtags,
+        platformFields: (variant.platformFields as Record<string, unknown> | null) ?? {},
+      })),
+    );
+    const hashDepois = aiContentHash(
+      { title: null, body: '', hashtags: [] },
+      variants.map((variant) => ({
+        platform: variant.platform,
+        socialAccountId: variant.socialAccountId ?? null,
+        title: variant.title ?? null,
+        body: variant.body ?? null,
+        hashtags: variant.hashtags ?? [],
+        platformFields: variant.platformFields ?? {},
+      })),
+    );
+    const invalidarRevisao =
+      atual.aiGenerated && atual.aiReviewedAt !== null && hashAntes !== hashDepois;
+
     await this.container.prisma.$transaction(async (tx) => {
       await tx.contentVariant.deleteMany({ where: { contentId } });
 
@@ -253,6 +345,13 @@ export class ContentService {
             hashtags: variant.hashtags ?? [],
             platformFields: (variant.platformFields ?? {}) as object,
           },
+        });
+      }
+
+      if (invalidarRevisao) {
+        await tx.content.update({
+          where: { id: contentId },
+          data: { aiReviewedAt: null, aiReviewHash: null },
         });
       }
     });
@@ -377,18 +476,39 @@ export class ContentService {
   private async loadOwned(
     auth: AuthContext,
     contentId: string,
-  ): Promise<{ id: string; clientId: string | null; aiGenerated: boolean; aiReviewedAt: Date | null }> {
+  ): Promise<{
+    id: string;
+    clientId: string | null;
+    title: string | null;
+    body: string;
+    hashtags: string[];
+    mediaAssetIds: string[];
+    aiGenerated: boolean;
+    aiReviewedAt: Date | null;
+  }> {
     const content = await this.container.prisma.content.findFirst({
       where: { id: contentId, organizationId: auth.organizationId, deletedAt: null },
-      select: { id: true, clientId: true, aiGenerated: true, aiReviewedAt: true },
+      select: {
+        id: true,
+        clientId: true,
+        title: true,
+        body: true,
+        hashtags: true,
+        aiGenerated: true,
+        aiReviewedAt: true,
+        media: {
+          orderBy: { position: 'asc' },
+          select: { mediaAssetId: true },
+        },
+      },
     });
     if (!content) throw new NotFoundError('Conteúdo', contentId);
     if (content.clientId) this.assertClientScope(auth, content.clientId);
-    return content;
+    const { media, ...rest } = content;
+    return { ...rest, mediaAssetIds: media.map((link) => link.mediaAssetId) };
   }
 
-  private assertClientScope(auth: AuthContext, clientId: string): void {
-    if (auth.scopedClientIds.length > 0 && !auth.scopedClientIds.includes(clientId)) {
+  private assertClientScope(auth: AuthContext, clientId: string): void {    if (auth.scopedClientIds.length > 0 && !auth.scopedClientIds.includes(clientId)) {
       throw new ForbiddenError('Seu acesso está limitado a outros clientes desta organização.');
     }
   }
@@ -412,4 +532,14 @@ export class ContentService {
       });
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+
+function mesmasTags(a: string[], b: string[]): boolean {
+  return a.length === b.length && [...a].sort().every((tag, index) => tag === [...b].sort()[index]);
+}
+
+function aiReviewed(content: { aiReviewedAt: Date | null }): boolean {
+  return content.aiReviewedAt !== null;
 }

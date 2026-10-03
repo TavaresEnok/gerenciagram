@@ -66,6 +66,14 @@ export interface CheckRemoteStatePayload extends BaseJobPayload {
   attempt: number;
 }
 
+/**
+ * Prazo máximo padrão de espera pela plataforma, compartilhado: quem grava o
+ * deadline (processador de publicação, retomada pela API) e quem o aplica
+ * (verificação) precisam concordar. O worker permite ajustar por ambiente
+ * com REMOTE_STATE_MAX_WINDOW_MS.
+ */
+export const DEFAULT_REMOTE_STATE_WINDOW_MS = 24 * 60 * 60_000;
+
 // ---------------------------------------------------------------------------
 //  Mídia
 // ---------------------------------------------------------------------------
@@ -149,19 +157,37 @@ export interface ProcessDataDeletionPayload extends BaseJobPayload {
  * `jobId` determinístico. Enfileirar o mesmo destino duas vezes (dupla
  * submissão, reprocessamento, corrida entre réplicas da API) resulta em UM
  * job, porque o BullMQ ignora um job cujo id já existe.
+ *
+ * ATENÇÃO ao separador: o BullMQ 5 PROÍBE ':' em jobId customizado
+ * ("Custom Id cannot contain :") — o caractere é reservado às chaves
+ * internas do Redis. Por isso `_`.
  */
 export function publishJobId(postTargetId: string): string {
-  return `publish:${postTargetId}`;
+  return `publish_${postTargetId}`;
+}
+
+/**
+ * Job de verificação de estado remoto: UM por destino, reagendado com
+ * `moveToDelayed` (sem consumir tentativa) enquanto a plataforma processa.
+ * O id fixo é o que faz a reenfileiração duplicada virar no-op.
+ */
+export function checkRemoteJobId(postTargetId: string): string {
+  return `check-remote_${postTargetId}`;
 }
 
 export function mediaJobId(mediaAssetId: string): string {
-  return `media:${mediaAssetId}`;
+  return `media_${mediaAssetId}`;
 }
 
 export function tokenRefreshJobId(socialAccountId: string): string {
-  return `token:${socialAccountId}`;
+  return `token_${socialAccountId}`;
 }
 
 export function metricsJobId(socialAccountId: string, forDate: string): string {
-  return `metrics:${socialAccountId}:${forDate}`;
+  return `metrics_${socialAccountId}_${forDate}`;
+}
+
+/** Uma rodada de sincronização de inbox por conta — ver inbox.ts. */
+export function inboxSyncJobId(socialAccountId: string): string {
+  return `inbox_${socialAccountId}`;
 }

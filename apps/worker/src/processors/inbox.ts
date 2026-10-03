@@ -248,7 +248,7 @@ export async function scanAccountsForInboxSync(
         organizationId: conta.organizationId,
         correlationId: `inbox-sync:${conta.id}`,
       },
-      `inbox:${conta.id}`,
+      `inbox_${conta.id}`,
     );
   }
 

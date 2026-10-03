@@ -1,5 +1,6 @@
 import {
   JOB_APPLY_RETENTION,
+  JOB_CHECK_REMOTE_STATE,
   JOB_COLLECT_ACCOUNT_METRICS,
   JOB_PROCESS_DATA_DELETION,
   JOB_GENERATE_REPORT,
@@ -9,6 +10,8 @@ import {
   JOB_SCAN_EXPIRING_TOKENS,
   JOB_SYNC_INBOX,
   QUEUE_NAMES,
+  checkRemoteJobId,
+  type CheckRemoteStatePayload,
   type RefreshTokenPayload,
   type SyncInboxPayload,
 } from '@app/core';
@@ -26,6 +29,10 @@ import {
 } from './processors/maintenance.js';
 import { processMedia } from './processors/media.js';
 import { processPublishTarget } from './processors/publish.js';
+import {
+  processCheckRemoteState,
+  reconcileProcessingTargets,
+} from './processors/remote-state.js';
 import { processGenerateReport } from './processors/reports.js';
 import { processTokenRefresh, scanExpiringTokens } from './processors/tokens.js';
 
@@ -50,6 +57,13 @@ const JOB_EVALUATE_ALERTS = 'maintenance:evaluate-alerts';
  * durante, marca para conferência em vez de arriscar publicar duas vezes.
  */
 const JOB_RECOVER_STUCK = 'maintenance:recover-stuck-publishing';
+
+/**
+ * Rede de segurança dos destinos PROCESSING: recoloca a verificação de
+ * estado remoto cujo job se perdeu e aplica o prazo máximo quando a cadeia
+ * de consultas morreu por completo.
+ */
+const JOB_RECONCILE_PROCESSING = 'maintenance:reconcile-processing';
 
 /**
  * Processo de workers.
@@ -138,7 +152,31 @@ async function main(): Promise<void> {
 
   makeWorker(
     QUEUE_NAMES.publish,
-    (job) => processPublishTarget(container, job as never),
+    async (job: Job) => {
+      // A fila de publicação também leva a VERIFICAÇÃO do processamento
+      // remoto: é o mesmo domínio (um desfecho por destino) e a mesma cota —
+      // uma fila separada adicionaria infra sem separar carga nenhuma.
+      if (job.name === JOB_CHECK_REMOTE_STATE) {
+        await processCheckRemoteState(container, job as never);
+        return;
+      }
+
+      await processPublishTarget(
+        container,
+        job as never,
+        (payload: CheckRemoteStatePayload, delayMs: number) =>
+          publishQueue.add(JOB_CHECK_REMOTE_STATE, payload, {
+            jobId: checkRemoteJobId(payload.postTargetId),
+            delay: delayMs,
+            // Erros RECUPERÁVEIS de consulta (rede instável, 5xx) re-tentam
+            // por aqui; o "ainda processando" reagenda com moveToDelayed, que
+            // não consome estas tentativas.
+            attempts: 10,
+            backoff: { type: 'exponential', delay: 30_000 },
+            removeOnComplete: true,
+          }).then(() => undefined),
+      );
+    },
     env.PUBLISH_CONCURRENCY,
   );
 
@@ -162,7 +200,7 @@ async function main(): Promise<void> {
       if (job.name === JOB_SCAN_EXPIRING_TOKENS) {
         await scanExpiringTokens(container, async (payload: RefreshTokenPayload) => {
           await tokenQueue.add(JOB_REFRESH_TOKEN, payload, {
-            jobId: `token:${payload.socialAccountId}`,
+            jobId: `token_${payload.socialAccountId}`,
             attempts: 3,
             backoff: { type: 'exponential', delay: 60_000 },
           });
@@ -238,6 +276,10 @@ async function main(): Promise<void> {
         await reconcileOrphanTargets(container, publishQueue);
         return;
       }
+      if (job.name === JOB_RECONCILE_PROCESSING) {
+        await reconcileProcessingTargets(container, publishQueue);
+        return;
+      }
       if (job.name === JOB_RECOVER_STUCK) {
         await recoverStuckPublishing(container, publishQueue);
         return;
@@ -267,7 +309,7 @@ async function main(): Promise<void> {
       // A cada 30 min. O `jobId` fixo impede que subir uma segunda réplica do
       // worker registre um segundo agendador para o mesmo trabalho.
       repeat: { pattern: '*/30 * * * *' },
-      jobId: 'repeat:scan-expiring-tokens',
+      jobId: 'repeat_scan-expiring-tokens',
       removeOnComplete: true,
     },
   );
@@ -278,7 +320,7 @@ async function main(): Promise<void> {
     {
       // 3h da manhã, quando o volume de publicação é menor.
       repeat: { pattern: '0 3 * * *' },
-      jobId: 'repeat:apply-retention',
+      jobId: 'repeat_apply-retention',
       removeOnComplete: true,
     },
   );
@@ -291,7 +333,7 @@ async function main(): Promise<void> {
       // intervalo mantém o consumo de cota previsível: uma varredura por
       // conta a cada quarto de hora.
       repeat: { pattern: '*/15 * * * *' },
-      jobId: 'repeat:scan-inbox',
+      jobId: 'repeat_scan-inbox',
       removeOnComplete: true,
     },
   );
@@ -304,7 +346,7 @@ async function main(): Promise<void> {
       // 15 min sem atividade, não este intervalo — rodar com frequência só
       // encurta o tempo até a recuperação.
       repeat: { pattern: '*/5 * * * *' },
-      jobId: 'repeat:recover-stuck-publishing',
+      jobId: 'repeat_recover-stuck-publishing',
       removeOnComplete: true,
     },
   );
@@ -316,7 +358,20 @@ async function main(): Promise<void> {
       // A cada 5 min. O silêncio pós-disparo (ALERT_COOLDOWN_MINUTES) é o que
       // impede que um problema persistente vire um e-mail a cada rodada.
       repeat: { pattern: '*/5 * * * *' },
-      jobId: 'repeat:evaluate-alerts',
+      jobId: 'repeat_evaluate-alerts',
+      removeOnComplete: true,
+    },
+  );
+
+  await maintenanceQueue.add(
+    JOB_RECONCILE_PROCESSING,
+    { correlationId: 'reconcile-processing' },
+    {
+      // A cada 5 min. Mesmo raciocínio do recover-stuck: quem decide é o
+      // prazo máximo gravado no destino; rodar seguido só encurta a
+      // recuperação de um job de verificação perdido.
+      repeat: { pattern: '*/5 * * * *' },
+      jobId: 'repeat_reconcile-processing',
       removeOnComplete: true,
     },
   );
@@ -327,7 +382,7 @@ async function main(): Promise<void> {
     {
       // A cada 2 minutos verifica se algum destino SCHEDULED ou QUEUED ficou órfão.
       repeat: { pattern: '*/2 * * * *' },
-      jobId: 'repeat:reconcile-orphans',
+      jobId: 'repeat_reconcile-orphans',
       removeOnComplete: true,
     },
   );

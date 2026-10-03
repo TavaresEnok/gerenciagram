@@ -1,20 +1,28 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Readable } from 'node:stream';
 
 /**
  * Acesso ao storage pelo worker.
  *
- * Menor superfície que a interface da API de propósito: o worker só precisa
- * ler o arquivo para publicar e gravar a miniatura gerada. Não expõe
- * `deleteObject` — expurgo é responsabilidade do job de retenção, que passa
- * pelo caminho auditado.
+ * Menor superfície que a interface da API de propósito. `deleteObject` existe
+ * para o expurgo (retenção e direito de exclusão LGPD): apagar a LINHA sem
+ * apagar o objeto deixaria bytes órfãos para sempre, e a exclusão física é
+ * justamente a obrigação que esses fluxos precisam cumprir.
  */
-
 export interface Storage {
   getObjectStream(key: string): Promise<Readable>;
   getObjectBuffer(key: string): Promise<Buffer>;
   putObject(key: string, body: Buffer, contentType: string): Promise<void>;
+
+  /**
+   * Remove o objeto do bucket. IDEMPOTENTE no S3/MinIO: apagar uma chave que
+   * não existe devolve sucesso, o que permite retomar um expurgo que falhou
+   * no meio sem estado extra. (Atenção em buckets com VERSIONAMENTO ligado:
+   * DeleteObject cria um delete marker e manteria as versões antigas — por
+   * isso o bucket de mídia deve rodar sem versionamento, ver DEPLOYMENT.md.)
+   */
+  deleteObject(key: string): Promise<void>;
 
   /**
    * URL assinada e temporária de onde uma plataforma pode BUSCAR a mídia.
@@ -85,5 +93,9 @@ export class S3Storage implements Storage {
         ContentLength: body.length,
       }),
     );
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 }

@@ -51,6 +51,7 @@ export async function applyRetention(container: WorkerContainer): Promise<void> 
   let purgedMedia = 0;
   let purgedAnalytics = 0;
   let purgedAudit = 0;
+  let objetosFalhos = 0;
 
   for (const organization of organizations) {
     // Mídia: só o que já está em soft-delete há mais tempo que a retenção.
@@ -66,9 +67,20 @@ export async function applyRetention(container: WorkerContainer): Promise<void> 
     });
 
     for (const asset of expiredMedia) {
-      // O objeto no bucket sai antes da linha: se falharmos no meio, sobra a
-      // linha apontando para um objeto ausente — recuperável. O inverso
-      // deixaria um objeto órfão que ninguém sabe que existe.
+      // O objeto no bucket sai ANTES da linha. A ordem invertida deixaria um
+      // arquivo órfão que ninguém sabe que existe; nesta, uma falha a meio
+      // caminho deixa a linha e a próxima execução retoma — e a remoção do
+      // objeto é idempotente no S3, então repetir não custa nada.
+      try {
+        await removeStorageObjects(container, [asset.storageKey, asset.thumbnailKey]);
+      } catch (error) {
+        objetosFalhos += 1;
+        log.warn(
+          { err: error, mediaAssetId: asset.id },
+          'falha ao remover objeto do storage — a linha fica para a próxima rodada',
+        );
+        continue;
+      }
       await container.prisma.mediaAsset.delete({ where: { id: asset.id } });
       purgedMedia += 1;
     }
@@ -90,8 +102,30 @@ export async function applyRetention(container: WorkerContainer): Promise<void> 
     purgedAudit += audit.count;
   }
 
+  // Relatórios expirados: o ARQUIVO também precisa sair — a linha apagada sem
+  // o objeto era o vazamento que este bloco fecha. O relatório pode ser
+  // regerado a qualquer momento, então a linha só cai depois do objeto.
+  const relatoriosExpirados = await container.prisma.report.findMany({
+    where: { expiresAt: { not: null, lte: new Date() } },
+    select: { id: true, storageKey: true },
+    take: 500,
+  });
+
+  let relatoriosExpurgados = 0;
+  for (const report of relatoriosExpirados) {
+    try {
+      await removeStorageObjects(container, [report.storageKey]);
+    } catch (error) {
+      objetosFalhos += 1;
+      log.warn({ err: error, reportId: report.id }, 'falha ao remover relatório do storage');
+      continue;
+    }
+    await container.prisma.report.delete({ where: { id: report.id } });
+    relatoriosExpurgados += 1;
+  }
+
   // Limpezas globais, que não dependem da organização.
-  const [notifications, tokens, sessions, reports] = await Promise.all([
+  const [notifications, tokens, sessions] = await Promise.all([
     container.prisma.notification.deleteMany({
       where: {
         readAt: { not: null, lte: cutoff(DEFAULT_RETENTION.notifications) },
@@ -103,9 +137,6 @@ export async function applyRetention(container: WorkerContainer): Promise<void> 
     container.prisma.session.deleteMany({
       where: { expiresAt: { lte: new Date() } },
     }),
-    container.prisma.report.deleteMany({
-      where: { expiresAt: { not: null, lte: new Date() } },
-    }),
   ]);
 
   log.info(
@@ -116,10 +147,26 @@ export async function applyRetention(container: WorkerContainer): Promise<void> 
       notificacoes: notifications.count,
       tokensVerificacao: tokens.count,
       sessoes: sessions.count,
-      relatorios: reports.count,
+      relatorios: relatoriosExpurgados,
+      objetosFalhos,
     },
     'retenção aplicada',
   );
+}
+
+/**
+ * Remove objetos do bucket tolerando nulos. Idempotente por construção: no
+ * S3/MinIO, apagar uma chave inexistente responde sucesso — então retomar um
+ * expurgo interrompido não exige saber onde ele parou.
+ */
+async function removeStorageObjects(
+  container: WorkerContainer,
+  keys: Array<string | null>,
+): Promise<void> {
+  for (const key of keys) {
+    if (!key) continue;
+    await container.storage.deleteObject(key);
+  }
 }
 
 /**
@@ -140,11 +187,19 @@ export async function processDataDeletion(
     where: { id: deletionRequestId },
   });
 
-  if (!request || request.status !== 'CONFIRMED') {
-    log.warn({ status: request?.status }, 'pedido de exclusão não está confirmado');
+  if (!request) {
+    log.warn('pedido de exclusão não encontrado (organização já removida?)');
     return;
   }
-  if (request.scheduledFor > new Date()) {
+
+  // Reentrada: CONFIRMED é o ponto de partida; PROCESSING é o resíduo de um
+  // worker morto no meio do expurgo — tratar como "continue de onde parou"
+  // (todas as etapas são idempotentes) em vez de travar o pedido para sempre.
+  if (request.status !== 'CONFIRMED' && request.status !== 'PROCESSING') {
+    log.warn({ status: request.status }, 'pedido de exclusão não está confirmado');
+    return;
+  }
+  if (request.scheduledFor > new Date() && request.status === 'CONFIRMED') {
     log.debug({ scheduledFor: request.scheduledFor }, 'ainda dentro da janela de arrependimento');
     return;
   }
@@ -189,16 +244,53 @@ export async function processDataDeletion(
 
     report['tokensRevogados'] = revocations;
 
-    // 2. Apagar a mídia do storage
+    // 2. Apagar os objetos do storage ANTES de remover a organização.
+    //    Apagar a linha sem o objeto deixaria os arquivos vivos no bucket
+    //    para sempre — e o direito de exclusão da LGPD é sobre os dados, não
+    //    sobre os metadados. Falha parcial: coleta, informa e re-tenta (a
+    //    remoção é idempotente, então a próxima execução retoma).
     const assets = await container.prisma.mediaAsset.findMany({
       where: { organizationId: request.organizationId },
       select: { storageKey: true, thumbnailKey: true },
     });
+    const reports = await container.prisma.report.findMany({
+      where: { organizationId: request.organizationId },
+      select: { storageKey: true },
+    });
+
+    const chaves = [
+      ...assets.flatMap((asset) => [asset.storageKey, asset.thumbnailKey]),
+      ...reports.map((report) => report.storageKey),
+    ].filter((key): key is string => key !== null);
+
+    let removidos = 0;
+    const falhos: string[] = [];
+    for (const key of chaves) {
+      try {
+        await container.storage.deleteObject(key);
+        removidos += 1;
+      } catch (error) {
+        falhos.push(key);
+        log.warn({ err: error, key }, 'falha ao remover objeto durante a exclusão');
+      }
+    }
+
     report['arquivosDeMidia'] = assets.length;
+    report['objetosRemovidos'] = removidos;
 
-    // 3. Apagar a organização — o cascade do schema leva o resto junto
-    await container.prisma.organization.delete({ where: { id: request.organizationId } });
+    if (falhos.length > 0) {
+      report['objetosComFalha'] = falhos.length;
+      throw new Error(
+        `${falhos.length} objeto(s) do storage não puderam ser removidos — ` +
+          'nova tentativa acontece pelo retry do job.',
+      );
+    }
 
+    // 3. Marca a conclusão ANTES da queda da organização: o cascade remove
+    //    também a linha do pedido, e um `update` nela depois disso lançaria
+    //    P2025 — derrubando o job DEPOIS do trabalho feito. Se o processo
+    //    cair entre este ponto e a exclusão, o retry reentra idempotente
+    //    (revogação e remoção de objetos) e termina o trabalho.
     report['concluidoEm'] = new Date().toISOString();
 
     await container.prisma.dataDeletionRequest.update({
@@ -210,11 +302,18 @@ export async function processDataDeletion(
       },
     });
 
+    // 4. Apagar a organização — o cascade do schema leva o resto junto,
+    //    inclusive a linha do pedido (a organização deixou de existir; o
+    //    relatório de execução não pode reter dados dela).
+    await container.prisma.organization.delete({ where: { id: request.organizationId } });
+
     log.info({ contas: accounts.length, midias: assets.length }, 'exclusão de dados concluída');
   } catch (error) {
     report['erro'] = error instanceof Error ? error.message : String(error);
 
-    await container.prisma.dataDeletionRequest.update({
+    // updateMany, não update: se a organização já tinha caído (falha na fase
+    // final), a linha do pedido foi junto pelo cascade e não há o que voltar.
+    await container.prisma.dataDeletionRequest.updateMany({
       where: { id: deletionRequestId },
       data: { status: 'CONFIRMED', executionReport: report as object },
     });
@@ -404,20 +503,23 @@ export async function recoverStuckPublishing(
       select: { id: true, externalCallStartedAt: true, finishedAt: true },
     });
 
-    // A cota foi reservada antes da chamada e ninguém a devolveu: sem isto,
-    // cada worker morto queima uma publicação do dia para sempre.
-    await releaseQuota(container.prisma, {
-      platform: target.platform,
-      socialAccountId: target.socialAccountId,
-      at: new Date(),
-    }).catch((error: unknown) => {
-      log.warn({ err: error, postTargetId: target.id }, 'falha ao devolver a cota');
-    });
-
     const chegouAChamar = ultimaTentativa?.externalCallStartedAt != null;
 
     if (!chegouAChamar) {
       // Certeza de que nada foi publicado.
+      //
+      // A cota, reservada ANTES da chamada, só é devolvida aqui: o envio
+      // nunca saiu. No ramo "durante a chamada" ela é MANTIDA de propósito —
+      // o consumo remoto já pode ter acontecido, e devolvê-la por timeout
+      // estouraria o limite real da plataforma no dia.
+      await releaseQuota(container.prisma, {
+        platform: target.platform,
+        socialAccountId: target.socialAccountId,
+        at: new Date(),
+      }).catch((error: unknown) => {
+        log.warn({ err: error, postTargetId: target.id }, 'falha ao devolver a cota');
+      });
+
       const devolvido = await container.prisma.postTarget.updateMany({
         where: { id: target.id, status: 'PUBLISHING', remoteId: null },
         data: { status: 'SCHEDULED', jobId: null },

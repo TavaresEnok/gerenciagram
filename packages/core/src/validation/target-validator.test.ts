@@ -111,6 +111,24 @@ describe('destino válido', () => {
   });
 });
 
+describe('revisão humana de conteúdo de IA (SPEC seção 6)', () => {
+  it('bloqueia no AGENDAMENTO o conteúdo de IA ainda não revisado', () => {
+    // A mesma regra que o worker aplica na última barreira aparece aqui,
+    // na tela, antes de confirmar — o usuário não descobre às 3h da manhã.
+    const result = validateTargets([makeTarget({ aiNeedsReview: true })], makeContext());
+
+    const erros = result.targets[0]?.issues.filter((i) => i.severity === 'ERROR') ?? [];
+    expect(erros.map((issue) => issue.code)).toContain('AI_REVIEW_REQUIRED');
+    expect(result.allValid).toBe(false);
+  });
+
+  it('depois da revisão, o conteúdo de IA agenda normalmente', () => {
+    const result = validateTargets([makeTarget({ aiNeedsReview: false })], makeContext());
+    const erros = result.targets[0]?.issues.filter((i) => i.severity === 'ERROR') ?? [];
+    expect(erros).toEqual([]);
+  });
+});
+
 describe('conteúdo igual em várias contas', () => {
   it('BLOQUEIA na plataforma que proíbe (cenário do X na SPEC seção 21)', () => {
     const targets = [

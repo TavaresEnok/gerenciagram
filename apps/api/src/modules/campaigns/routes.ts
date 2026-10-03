@@ -293,7 +293,7 @@ export async function registerCampaignRoutes(
           published: targets.filter((target) => target.status === 'PUBLISHED').length,
           failed: targets.filter((target) => target.status === 'FAILED').length,
           pending: targets.filter((target) =>
-            ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING'].includes(target.status),
+            ['PENDING', 'SCHEDULED', 'QUEUED', 'PUBLISHING', 'PROCESSING'].includes(target.status),
           ).length,
         },
         totals,

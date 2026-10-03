@@ -1,6 +1,6 @@
 # Status do projeto
 
-Atualizado em **11/09/2026**.
+Atualizado em **03/10/2026**.
 
 ---
 
@@ -28,7 +28,13 @@ credenciais externas permitem**. O sistema builda, sobe e roda ponta a ponta.
 | **14** | Billing | ✅ Limites e planos; **sem gateway de pagamento** |
 | **15** | Hardening | ✅ Documentado; itens de produção listados abaixo |
 
-**Verificação:** 135 testes automatizados (75 no core + 34 no platform + 18 no worker + 8 na api) todos passando com sucesso contra Postgres real e BullMQ. Build e typecheck limpos em todos os pacotes.
+**Verificação (03/10/2026):** 223 testes automatizados passando — 68 no worker
+(contra Postgres e BullMQ REAL), 26 na API, 77 no core e 52 no platform.
+Typecheck limpo nos 9 pacotes. **Lint está quebrado no baseline** (ESLint 9 sem
+`eslint.config`), registrado como pendência. Validação contra contas reais das
+redes segue bloqueada por credenciais (seção abaixo) — os fluxos do primeiro
+ciclo foram provados com testes automatizados e integração de fila real, sem
+chamadas externas.
 
 
 ---
@@ -154,7 +160,61 @@ deploy carrega junto. As três imagens agora constroem, e a da API passa nas
 A conta era criada e a requisição respondia 500. Agora o envio do e-mail de
 verificação falha em silêncio (com log de erro) e o usuário pode pedir reenvio.
 
-### Revisão de 2026-09-12
+### Revisão de 2026-10-03
+
+Uma análise estática externa (commit `a51c8f7`) apontou seis defeitos de
+confiabilidade que os registros anteriores de sucesso não cobriam. Todos
+reproduzidos, corrigidos e cobertos por teste — incluindo, desta vez,
+**integração contra BullMQ real** (era justamente a camada que o dublê de job
+escondia). Detalhes em `docs/IMPLEMENTATION_PROGRESS.md`:
+
+1. **"Envio aceito" não é "publicado".** O processador marcava PUBLISHED ao
+   receber o resultado do adapter, embora TikTok, YouTube e Facebook
+   processem de forma assíncrona e possam rejeitar depois. Agora o destino
+   vai para `PROCESSING` (novo status) com o identificador da OPERAÇÃO remota
+   (no TikTok, `publish_id` ≠ id público do post), e um job durável de
+   verificação (`check-remote-state`) consulta a plataforma com backoff até a
+   confirmação ou o prazo máximo. Sucesso, rejeição e desconhecido (timeout)
+   têm desfechos distintos — e notificação de publicação concluída só sai na
+   confirmação.
+2. **`job.changeDelay` não funciona em job ativo.** Os caminhos de cota
+   estourada e circuito aberto chamavam o método sobre o job EM processamento
+   — no BullMQ real (5.81.4) isso lança `JobNotInState` e a fila re-tentava
+   pelo backoff de erro, no horário errado e gastando tentativa. Trocado por
+   `moveToDelayed` + `DelayedError` (o mecanismo oficial), provado em
+   Queue/Worker reais com Redis isolado.
+3. **Todos os `jobId` customizados usavam `:`, proibido pelo BullMQ 5.** O
+   primeiro teste de fila real escancarou: `publish:`, `token:`, `inbox:`,
+   `report:`, `metrics:`, `repeat:`... qualquer `queue.add` com eles lançava.
+   Hoje o agendamento de posts pela API falharia no BullMQ resolvido no
+   lockfile. Separador agora é `_`, centralizado nos geradores do contrato.
+4. **Revisão de IA era burlável por omissão e por edição.** O compositor
+   aplicava sugestões sem persistir a proveniência (caía o `aiGenerated`) e um
+   PATCH qualquer marcava a revisão sozinho. Agora: a tela declara quando uma
+   sugestão foi aplicada; a revisão é ação explícita vinculada ao HASH da
+   versão revista (texto + hashtags + variações + campos de plataforma); e
+   mudar qualquer parte disso depois da aprovação exige revisar de novo. O
+   validador de agendamento bloqueia conteúdo de IA não revisado antes mesmo
+   do worker.
+5. **Retenção e exclusão LGPD não tocavam o bucket.** `applyRetention` e
+   `processDataDeletion` apagavam linhas e deixavam os objetos vivos no S3.
+   Agora removem objeto e miniatura ANTES da linha, com idempotência
+   (objeto ausente é sucesso no S3), tolerância a falha parcial com retomada
+   na próxima rodada, e o mesmo para relatórios expirados.
+6. **Retry tratava resultado desconhecido como falha confirmada.** Destinos
+   `PUBLISH_INTERRUPTED_UNVERIFIED` iam para a fila como os demais, podendo
+   duplicar uma criação que a rede já aceitou. Agora: com identificador de
+   operação, o retry retoma a VERIFICAÇÃO (sem novo upload); sem ele, exige
+   confirmação humana com o risco declarado, registrada em auditoria. E a cota
+   só é devolvida quando a chamada não saiu (ou foi recusada na autenticação)
+   — timeout depois do envio mantém a reserva, porque a plataforma pode ter
+   cobrado.
+
+Registrado como falha preexistente (não corrigida neste ciclo): **o lint está
+quebrado no baseline** — os pacotes usam ESLint 9 sem `eslint.config` e o
+`next lint` do web entra em prompt interativo. Entra na fila técnica.
+
+---
 
 Uma revisão do sistema inteiro encontrou mais cinco defeitos, todos corrigidos
 e cobertos por teste (commit `e95beba`):

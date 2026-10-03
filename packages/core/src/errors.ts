@@ -224,3 +224,17 @@ export function isRetryable(error: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Códigos de erro cujo desfecho remoto é DESCONHECIDO: a criação chegou a
+ * sair (ou pode ter saído) e ninguém confirmou. Reenviar a mesma criação às
+ * cegas pode publicar duas vezes, então estes destinos NÃO entram no retry
+ * comum — ou se retoma a VERIFICAÇÃO do estado remoto (há identificador da
+ * operação), ou se exige decisão humana explícita com o risco declarado.
+ */
+export const UNVERIFIED_OUTCOME_CODES = new Set([
+  'PUBLISH_INTERRUPTED_UNVERIFIED',
+  'REMOTE_PROCESSING_TIMEOUT',
+  'REMOTE_STATE_CHECK_FAILED',
+  'REMOTE_OPERATION_MISSING',
+]);

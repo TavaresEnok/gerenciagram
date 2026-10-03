@@ -311,7 +311,9 @@ describe('cota', () => {
     expect(appQuota[0]?.count).toBe(3);
   });
 
-  it('devolve a cota quando a publicação falha definitivamente', async () => {
+  it('devolve a cota quando a publicação falha definitivamente SEM efeito remoto', async () => {
+    // TokenExpiredError = a plataforma recusou na autenticação, sem aceitar
+    // nada do upload: não há consumo remoto a compensar.
     const scenario = await createScenario(harness.prisma, { accountCount: 1 });
     const target = scenario.targets[0]!;
 
@@ -325,6 +327,39 @@ describe('cota', () => {
     // Reservou ao tentar e devolveu ao falhar: o limite do dia não pode ser
     // consumido por publicações que não aconteceram.
     expect(appQuota?.count ?? 0).toBe(0);
+  });
+
+  it('NÃO devolve a cota quando a chamada à plataforma chegou a sair', async () => {
+    // O timeout DEPOIS do envio é o caso traiçoeiro: o upload pode ter sido
+    // contado na janela remota. Devolver a reserva "porque falhou" estouraria
+    // o limite real da plataforma no dia (ex.: 100 uploads/dia do YouTube).
+    const scenario = await createScenario(harness.prisma, { accountCount: 1 });
+    const target = scenario.targets[0]!;
+
+    // Última tentativa: o timeout estoura o orçamento e vira falha definitiva.
+    await harness.prisma.postTarget.update({
+      where: { id: target.id },
+      data: { attempts: 4, maxAttempts: 5 },
+    });
+
+    harness.behavior.responses.push(new PlatformTimeoutError('YouTube', 30_000));
+    await processPublishTarget(harness.container, fakeJob(target.id, scenario.organizationId));
+
+    const tentativa = await harness.prisma.publishAttempt.findFirstOrThrow({
+      where: { postTargetId: target.id },
+    });
+    // A chamada externa chegou a sair — é isso que decide a cota ficar.
+    expect(tentativa.externalCallStartedAt).not.toBeNull();
+
+    const appQuota = await harness.prisma.platformQuotaUsage.findFirstOrThrow({
+      where: { platform: 'YOUTUBE', scopeKey: 'APP' },
+    });
+    expect(appQuota.count).toBe(1);
+
+    const updated = await harness.prisma.postTarget.findUniqueOrThrow({
+      where: { id: target.id },
+    });
+    expect(updated.status).toBe('FAILED');
   });
 });
 
@@ -393,6 +428,49 @@ describe('revisão humana de conteúdo gerado por IA', () => {
       where: { id: target.id },
     });
     expect(updated.status).toBe('FAILED');
+    expect(updated.errorCode).toBe('AI_REVIEW_REQUIRED');
+  });
+
+  it('publica normalmente DEPOIS da revisão registrada', async () => {
+    const scenario = await createScenario(harness.prisma, { accountCount: 1 });
+    const target = scenario.targets[0]!;
+
+    await harness.prisma.content.update({
+      where: { id: scenario.contentId },
+      data: { aiGenerated: true, aiReviewedAt: new Date() },
+    });
+
+    harness.behavior.responses.push({ remoteId: 'video-revisado' });
+    await processPublishTarget(harness.container, fakeJob(target.id, scenario.organizationId));
+
+    expect(harness.behavior.calls).toHaveLength(1);
+
+    const updated = await harness.prisma.postTarget.findUniqueOrThrow({
+      where: { id: target.id },
+    });
+    expect(updated.status).toBe('PUBLISHED');
+  });
+
+  it('revisão invalidada por edição volta a bloquear (aiReviewedAt zerado pela API)', async () => {
+    // A API é quem zera aiReviewedAt quando o texto muda; aqui provamos que
+    // a barreira do worker obedece à invalidação, não só à ausência inicial.
+    const scenario = await createScenario(harness.prisma, { accountCount: 1 });
+    const target = scenario.targets[0]!;
+
+    await harness.prisma.content.update({
+      where: { id: scenario.contentId },
+      // Estado de "revisado e depois editado": a revisão foi invalidada.
+      data: { aiGenerated: true, aiReviewedAt: null },
+    });
+
+    harness.behavior.responses.push({ remoteId: 'nao-deveria-publicar' });
+
+    await processPublishTarget(harness.container, fakeJob(target.id, scenario.organizationId));
+
+    expect(harness.behavior.calls).toHaveLength(0);
+    const updated = await harness.prisma.postTarget.findUniqueOrThrow({
+      where: { id: target.id },
+    });
     expect(updated.errorCode).toBe('AI_REVIEW_REQUIRED');
   });
 });

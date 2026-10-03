@@ -57,6 +57,13 @@ export interface TargetValidationInput {
   media: TargetMediaInput[];
 
   scheduledAt: Date | null;
+
+  /**
+   * Conteúdo gerado por IA ainda não revisado por uma pessoa (SPEC seção 6).
+   * Bloqueia TODOS os destinos no agendamento, não só na hora de publicar:
+   * o usuário descobre enquanto olha a tela, não às 3h da manhã.
+   */
+  aiNeedsReview?: boolean;
 }
 
 /** Consumo já registrado, por escopo, para o dia do agendamento. */
@@ -125,6 +132,7 @@ export function validateTargets(
     validateAvailability(target, def, ctx, push);
     validateAccountStatus(target, push);
     validateSchedule(target, ctx, push);
+    validateAiReview(target, push);
     validateTextFields(target, def, push);
     validateMedia(target, def, push);
     validateRequiredUxFields(target, def, push);
@@ -250,6 +258,19 @@ function validateAccountStatus(target: TargetValidationInput, push: Push): void 
     code: `ACCOUNT_${target.accountStatus}`,
     severity: 'ERROR',
     message: messages[target.accountStatus] ?? `Conta indisponível: ${target.accountLabel}.`,
+  });
+}
+
+function validateAiReview(target: TargetValidationInput, push: Push): void {
+  if (!target.aiNeedsReview) return;
+
+  push(target.targetKey, {
+    code: 'AI_REVIEW_REQUIRED',
+    severity: 'ERROR',
+    message:
+      'Este conteúdo foi gerado por IA e ainda não passou por revisão humana. ' +
+      'Revise e registre a revisão antes de agendar.',
+    field: 'body',
   });
 }
 

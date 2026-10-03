@@ -6,12 +6,12 @@ import { processSyncInbox, scanAccountsForInboxSync } from './inbox.js';
 import { createHarness, createScenario, type TestHarness } from '../test/harness.js';
 
 /**
- * Sincronização da inbox contra o Postgres real.
+ * SincronizaÃ§Ã£o da inbox contra o Postgres real.
  *
- * O adapter é falso — não dá para ler comentários do YouTube num teste —, mas
- * banco, chave única e a lógica do processador são os de verdade. É
- * justamente aí que moram as garantias que interessam: não duplicar
- * comentário e não desfazer o trabalho de quem já respondeu.
+ * O adapter Ã© falso â€” nÃ£o dÃ¡ para ler comentÃ¡rios do YouTube num teste â€”, mas
+ * banco, chave Ãºnica e a lÃ³gica do processador sÃ£o os de verdade. Ã‰
+ * justamente aÃ­ que moram as garantias que interessam: nÃ£o duplicar
+ * comentÃ¡rio e nÃ£o desfazer o trabalho de quem jÃ¡ respondeu.
  */
 
 let harness: TestHarness;
@@ -26,7 +26,7 @@ afterEach(async () => {
 
 function syncJob(socialAccountId: string, organizationId: string): Job<SyncInboxPayload> {
   return {
-    id: `inbox:${socialAccountId}`,
+    id: `inbox_${socialAccountId}`,
     name: 'sync-inbox',
     data: {
       socialAccountId,
@@ -59,8 +59,8 @@ function comentario(remoteId: string, body: string) {
   };
 }
 
-describe('sincronização da inbox', () => {
-  it('grava os comentários das publicações recentes', async () => {
+describe('sincronizaÃ§Ã£o da inbox', () => {
+  it('grava os comentÃ¡rios das publicaÃ§Ãµes recentes', async () => {
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
     await publicar(alvo.id, 'video-1');
@@ -83,8 +83,8 @@ describe('sincronização da inbox', () => {
     expect(gravados[0]?.platform).toBe('YOUTUBE');
   });
 
-  it('rodar duas vezes NÃO duplica comentário', async () => {
-    // A chave única (conta, id remoto) é o que garante isso. Sem ela, cada
+  it('rodar duas vezes NÃƒO duplica comentÃ¡rio', async () => {
+    // A chave Ãºnica (conta, id remoto) Ã© o que garante isso. Sem ela, cada
     // rodada de 15 min multiplicaria a inbox.
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
@@ -101,9 +101,9 @@ describe('sincronização da inbox', () => {
     ).resolves.toBe(1);
   });
 
-  it('ressincronizar NÃO desmarca o que a equipe já leu e respondeu', async () => {
-    // O estado de leitura é NOSSO, não da plataforma. Se a rodada seguinte o
-    // sobrescrevesse, todo comentário já tratado voltaria para a fila.
+  it('ressincronizar NÃƒO desmarca o que a equipe jÃ¡ leu e respondeu', async () => {
+    // O estado de leitura Ã© NOSSO, nÃ£o da plataforma. Se a rodada seguinte o
+    // sobrescrevesse, todo comentÃ¡rio jÃ¡ tratado voltaria para a fila.
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
     await publicar(alvo.id, 'video-1');
@@ -116,7 +116,7 @@ describe('sincronização da inbox', () => {
       data: { isRead: true, isReplied: true, replyBody: 'Obrigado!', repliedAt: new Date() },
     });
 
-    // A rede devolve o mesmo comentário, agora editado pelo autor.
+    // A rede devolve o mesmo comentÃ¡rio, agora editado pelo autor.
     harness.behavior.comments.set('video-1', [comentario('c1', 'Muito bom! (editado)')]);
     await processSyncInbox(harness.container, syncJob(alvo.accountId, cenario.organizationId));
 
@@ -130,9 +130,9 @@ describe('sincronização da inbox', () => {
     expect(gravado?.replyBody).toBe('Obrigado!');
   });
 
-  it('falha numa publicação não impede as outras', async () => {
-    // Mesmo princípio do fan-out de publicação: a unidade de falha é o post,
-    // não a conta inteira.
+  it('falha numa publicaÃ§Ã£o nÃ£o impede as outras', async () => {
+    // Mesmo princÃ­pio do fan-out de publicaÃ§Ã£o: a unidade de falha Ã© o post,
+    // nÃ£o a conta inteira.
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
     await publicar(alvo.id, 'video-1');
@@ -162,8 +162,8 @@ describe('sincronização da inbox', () => {
 
     expect(segundo.remoteId).toBe('video-2');
 
-    harness.behavior.comments.set('video-1', new Error('vídeo removido na origem'));
-    harness.behavior.comments.set('video-2', [comentario('c9', 'Comentário do segundo vídeo')]);
+    harness.behavior.comments.set('video-1', new Error('vÃ­deo removido na origem'));
+    harness.behavior.comments.set('video-2', [comentario('c9', 'ComentÃ¡rio do segundo vÃ­deo')]);
 
     await processSyncInbox(harness.container, syncJob(alvo.accountId, cenario.organizationId));
 
@@ -175,7 +175,7 @@ describe('sincronização da inbox', () => {
     expect(gravados[0]?.remoteId).toBe('c9');
   });
 
-  it('ignora conta que precisa de reconexão', async () => {
+  it('ignora conta que precisa de reconexÃ£o', async () => {
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
     const alvo = cenario.targets[0]!;
     await publicar(alvo.id, 'video-1');
@@ -185,15 +185,15 @@ describe('sincronização da inbox', () => {
       data: { status: 'NEEDS_RECONNECT' },
     });
 
-    harness.behavior.comments.set('video-1', [comentario('c1', 'Olá')]);
+    harness.behavior.comments.set('video-1', [comentario('c1', 'OlÃ¡')]);
     await processSyncInbox(harness.container, syncJob(alvo.accountId, cenario.organizationId));
 
     expect(harness.behavior.commentCalls).toHaveLength(0);
     await expect(harness.prisma.comment.count()).resolves.toBe(0);
   });
 
-  it('não gasta chamada quando a conta não tem publicação recente', async () => {
-    // Uma conta recém-conectada não deve consumir cota da plataforma.
+  it('nÃ£o gasta chamada quando a conta nÃ£o tem publicaÃ§Ã£o recente', async () => {
+    // Uma conta recÃ©m-conectada nÃ£o deve consumir cota da plataforma.
     const cenario = await createScenario(harness.prisma, { accountCount: 1 });
 
     await processSyncInbox(
@@ -206,8 +206,8 @@ describe('sincronização da inbox', () => {
 });
 
 describe('varredura que enfileira as rodadas', () => {
-  it('enfileira uma conta ativa por vez, com jobId determinístico', async () => {
-    // O jobId fixo é o que impede duas réplicas do worker de sincronizarem a
+  it('enfileira uma conta ativa por vez, com jobId determinÃ­stico', async () => {
+    // O jobId fixo Ã© o que impede duas rÃ©plicas do worker de sincronizarem a
     // mesma conta em paralelo, dobrando o consumo de cota.
     const cenario = await createScenario(harness.prisma, { accountCount: 3 });
 
@@ -220,7 +220,7 @@ describe('varredura que enfileira as rodadas', () => {
     expect(enfileirados).toHaveLength(3);
 
     for (const item of enfileirados) {
-      expect(item.jobId).toBe(`inbox:${item.contaId}`);
+      expect(item.jobId).toBe(`inbox_${item.contaId}`);
     }
 
     const ids = new Set(enfileirados.map((item) => item.contaId));
@@ -228,7 +228,7 @@ describe('varredura que enfileira as rodadas', () => {
     expect(ids).toEqual(new Set(cenario.targets.map((alvo) => alvo.accountId)));
   });
 
-  it('não enfileira conta desconectada', async () => {
+  it('nÃ£o enfileira conta desconectada', async () => {
     const cenario = await createScenario(harness.prisma, { accountCount: 2 });
 
     await harness.prisma.socialAccount.update({

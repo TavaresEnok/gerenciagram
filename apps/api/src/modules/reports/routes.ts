@@ -146,7 +146,7 @@ export async function registerReportRoutes(
           organizationId: auth.organizationId,
           correlationId: request.correlationId,
         },
-        { jobId: `report:${report.id}`, attempts: 3, backoff: { type: 'exponential', delay: 15_000 } },
+        { jobId: `report_${report.id}`, attempts: 3, backoff: { type: 'exponential', delay: 15_000 } },
       );
 
       await recordAudit(prisma, {

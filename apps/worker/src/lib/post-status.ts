@@ -27,10 +27,14 @@ export async function recomputePostStatus(
   const failed = count('FAILED');
   const cancelled = count('CANCELLED');
   const publishing = count('PUBLISHING');
+  // PROCESSING = a plataforma aceitou mas ainda não confirmou. Para o post,
+  // continua "em publicação": anunciar PUBLISHED antes da confirmação remota
+  // é a mentira que este status existe para impedir.
+  const processing = count('PROCESSING');
   const skipped = count('SKIPPED');
 
   let status: string;
-  if (publishing > 0) status = 'PUBLISHING';
+  if (publishing + processing > 0) status = 'PUBLISHING';
   else if (published === total) status = 'PUBLISHED';
   else if (cancelled === total) status = 'CANCELLED';
   else if (failed + skipped === total) status = 'FAILED';
